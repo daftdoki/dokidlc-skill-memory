@@ -86,4 +86,21 @@ its current commit; search marks the page `suspect` if that file changes.
 `--check` is a read-only command that `doubt` runs; a failure marks the
 page suspect.
 
+## Built on memoryfields
+
+This plugin is a thin layer over memoryfields, Cal Paterson's format and
+tools for agent memory. The idea, the page format, and the search engine
+are his; this plugin adds the per-repository configuration, the host guard,
+the suspicion model, and the Claude Code packaging.
+
+- The article that started it: https://calpaterson.com/memoryfields.html
+- The format specification: https://github.com/calpaterson/memoryfield-spec (MIT)
+- The engine, memoryfield-tool: https://github.com/calpaterson/memoryfield-tool (AGPL-3.0-or-later)
+- His skill for agents, which informed ours: https://github.com/calpaterson/memoryfield-skill (MIT)
+
+memoryfield-tool is used as published, installed by `memory doctor --fix`
+at the commit in `memory.pin`. Nothing from it is copied into this
+repository. Fields written by this plugin are ordinary memoryfields and can
+be read, searched, exported, or served with his tool directly.
+
 See `DEVELOPMENT.md` to work on the plugin itself.

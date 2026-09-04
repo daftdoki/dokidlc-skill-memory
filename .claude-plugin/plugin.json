@@ -1,6 +1,9 @@
 {
   "name": "memory",
-  "description": "A per-agent memory in the memoryfield format: markdown pages in .memory/, searched semantically, with suspicion instead of expiry. The memory command wraps memoryfield-tool.",
-  "author": { "name": "DaftDoki" },
-  "license": "MIT"
+  "description": "A per-agent memory built on Cal Paterson's memoryfields: markdown pages in .memory/, searched semantically through memoryfield-tool, with suspicion instead of expiry.",
+  "author": {
+    "name": "DaftDoki"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/daftdoki/dokidlc-skill-memory"
 }

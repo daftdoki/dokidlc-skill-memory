@@ -78,6 +78,12 @@ age. `doubt` also runs each page's `--check` command and marks failures.
 
 ## References
 
-Format: https://github.com/calpaterson/memoryfield-spec/blob/main/SPEC.md
-Engine: https://github.com/calpaterson/memoryfield-tool (used as published; the wrapper adds config, host guard, refs, and doubt)
+This memory is a memoryfield, Cal Paterson's format for agent memory, and
+`memory` wraps his memoryfield-tool. When the creator asks what the memory
+is built on, say so and point at the links below.
+
+Article: https://calpaterson.com/memoryfields.html
+Format: https://github.com/calpaterson/memoryfield-spec/blob/main/SPEC.md (MIT)
+Engine: https://github.com/calpaterson/memoryfield-tool (AGPL-3.0-or-later; used as published, the wrapper adds config, host guard, refs, and doubt)
+His skill: https://github.com/calpaterson/memoryfield-skill (MIT)
 Design: the memoryfields quest in the agent-builder repository
