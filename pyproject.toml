@@ -1,0 +1,12 @@
+[project]
+name = "dokidlc-skill-memory"
+version = "0.0.0"
+description = "Test harness for the memory plugin. The plugin itself is bin/memory and skills/."
+requires-python = ">=3.12"
+
+[dependency-groups]
+dev = ["pytest>=8", "pyyaml>=6"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

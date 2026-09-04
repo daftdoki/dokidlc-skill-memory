@@ -1,0 +1,850 @@
+#!/usr/bin/env -S uv run --quiet --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["pyyaml>=6"]
+# ///
+"""The agent's memory. The only memory command an agent runs; on PATH as `memory` while the plugin is enabled.
+
+A thin layer over memoryfield-tool (used as published, at the commit in
+memory.pin). It generates the tool's per-machine config from the
+repository location, guards the embedding host, keeps index.md current, and
+computes suspicion. It never reimplements storage, search, or indexing.
+
+Usage:
+  memory search QUERY          ranked pages: filename, summary, distance
+  memory pull QUERY            full text of matching pages
+  memory read PAGE...          print pages
+  memory write PAGE [flags]    body on stdin; see write --help
+  memory delete PAGE
+  memory verify PAGE           record that the page was re-confirmed
+  memory doubt [--all]         pages with evidence they may be wrong
+  memory index                 full reindex and index.md regeneration
+  memory cost                  bytes and tokens of index.md and a search
+  memory doctor [--fix|--brief] check or install prerequisites
+  memory init                  create .memory/ and the CLAUDE.md paragraph
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import platform
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import tomllib
+import urllib.error
+import urllib.request
+from datetime import UTC, datetime
+from pathlib import Path
+
+import yaml
+
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+PIN_FILE = PLUGIN_ROOT / "memory.pin"
+ROOT: Path = Path.cwd()        # set_root() replaces these before any command runs
+FIELD_DIR: Path = ROOT / ".memory"
+FORMAT = 1
+FORMAT_RE = re.compile(r"<!-- memory format (\d+), written by memory (\S+) on (\S+) -->")
+CLAUDE_MD_MARK = "<!-- memory -->"
+CLAUDE_MD_PARAGRAPH = f"""
+## Memory {CLAUDE_MD_MARK}
+
+Your memory is in `.memory/`, searched with `memory search`. Search it before you investigate anything, and write to it when you learn something a future session should not rediscover. Read `.memory/index.md` for what it covers. The `memory` skill has the rules.
+"""
+
+
+def project_root() -> Path:
+    """CLAUDE_PROJECT_DIR when the harness sets it, else the git toplevel of cwd."""
+    env = os.environ.get("CLAUDE_PROJECT_DIR")
+    if env:
+        return Path(env).resolve()
+    try:
+        out = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        die("not inside a git repository and CLAUDE_PROJECT_DIR is unset")
+    return Path(out).resolve()
+
+
+def set_root(root: Path) -> None:
+    global ROOT, FIELD_DIR
+    ROOT = Path(root).resolve()
+    FIELD_DIR = ROOT / ".memory"
+
+
+def plugin_commit() -> str:
+    try:
+        return subprocess.run(["git", "-C", str(PLUGIN_ROOT), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=True).stdout.strip() or "unknown"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "unknown"
+DEFAULT_HOST = "127.0.0.1:11434"
+HOST_TIMEOUT = 2.0
+NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+PAGE_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*\.md$")
+SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+GENERATED_MARK = "<!-- generated below -->"
+PAGE_LIMIT = 8192
+# kind -> days after which an unverified page earns a "glance" hint. None: never.
+KINDS: dict[str, int | None] = {"environment": 30, "procedure": 90, "finding": 180, "decision": None}
+
+
+def strip_ansi(text: str) -> str:
+    """uv colors its output even when piped."""
+    return ANSI_RE.sub("", text)
+
+
+# --- location and config ----------------------------------------------------
+
+
+def cache_dir() -> Path:
+    """The platform cache directory memoryfield-tool itself uses."""
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Caches"
+    return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+
+
+def slugify(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return slug or "field"
+
+
+def field_name(root: Path | None = None) -> str:
+    """Repo dirname plus a hash of the absolute root. Two clones never collide."""
+    root = root or ROOT
+    digest = hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:8]
+    name = f"{slugify(root.name)}-{digest}"
+    assert NAME_RE.match(name), name
+    return name
+
+
+def config_path(root: Path | None = None) -> Path:
+    root = root or ROOT
+    return cache_dir() / "memoryfield-tool" / field_name(root) / "config.toml"
+
+
+def config_text(root: Path | None = None) -> str:
+    root = root or ROOT
+    return (
+        f"[memoryfields.{field_name(root)}]\n"
+        'transport = "local"\n'
+        f'location = "{(root / ".memory").resolve()}"\n'
+        'index_location = "cache"\n'
+    )
+
+
+def write_config(root: Path | None = None) -> Path:
+    root = root or ROOT
+    path = config_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = config_text(root)
+    if not path.exists() or path.read_text() != text:
+        path.write_text(text)
+    return path
+
+
+# --- host guard -------------------------------------------------------------
+
+
+def normalize_host(raw: str | None) -> str:
+    """Accept host:port or http://host:port; return a base URL."""
+    value = (raw or DEFAULT_HOST).strip().rstrip("/")
+    if not value.startswith(("http://", "https://")):
+        value = "http://" + value
+    return value
+
+
+def host_answers(base_url: str, timeout: float = HOST_TIMEOUT) -> bool:
+    """One GET with a short timeout. A silent host returns False, never hangs."""
+    try:
+        with urllib.request.urlopen(base_url + "/", timeout=timeout) as resp:
+            return resp.status == 200
+    except (urllib.error.URLError, socket.timeout, TimeoutError, OSError, ValueError):
+        return False
+
+
+def model_present(base_url: str, model: str, timeout: float = HOST_TIMEOUT) -> bool:
+    try:
+        with urllib.request.urlopen(base_url + "/api/tags", timeout=timeout) as resp:
+            tags = json.load(resp)
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+    names = {m.get("name", "").split(":")[0] for m in tags.get("models", [])}
+    return model in names
+
+
+# --- pin --------------------------------------------------------------------
+
+
+def read_pin(path: Path = PIN_FILE) -> dict[str, str]:
+    pin: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            pin[key.strip()] = value.strip()
+    return pin
+
+
+def installed_rev() -> str | None:
+    """The git revision uv installed, from its receipt. None if not a git install."""
+    try:
+        out = subprocess.run(
+            ["uv", "tool", "dir"], capture_output=True, text=True, check=True,
+            env=dict(os.environ, NO_COLOR="1"),
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    tools_dir = Path(strip_ansi(out).strip())
+    receipt = tools_dir / "memoryfield-tool" / "uv-receipt.toml"
+    if not receipt.is_file():
+        return None
+    try:
+        data = tomllib.loads(receipt.read_text())
+    except tomllib.TOMLDecodeError:
+        return None
+    for req in data.get("tool", {}).get("requirements", []):
+        git = req.get("git", "")
+        if "rev=" in git:
+            return git.split("rev=", 1)[1]
+    return None
+
+
+def pin_matches(pin: dict[str, str], rev: str | None) -> bool:
+    return bool(rev) and (rev.startswith(pin["tool_rev"]) or pin["tool_rev"].startswith(rev))
+
+
+# --- tool invocation --------------------------------------------------------
+
+
+def tool_env(root: Path | None = None) -> dict[str, str]:
+    root = root or ROOT
+    env = dict(os.environ)
+    env["MEMORYFIELD_TOOL_CONFIG"] = str(write_config(root))
+    env["OLLAMA_HOST"] = normalize_host(os.environ.get("OLLAMA_HOST"))
+    return env
+
+
+def tool(*args: str, stdin: str | None = None, root: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
+    root = root or ROOT
+    if shutil.which("memoryfield-tool") is None:
+        die("memoryfield-tool is not installed. Run: memory doctor --fix")
+    return subprocess.run(
+        ["memoryfield-tool", *args],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        env=tool_env(root),
+        check=check,
+    )
+
+
+def require_host(env: dict[str, str]) -> bool:
+    """True when embeddings will work. Prints one line and returns False otherwise."""
+    base = env["OLLAMA_HOST"]
+    if host_answers(base):
+        return True
+    print(f"memory: embedding host {base} does not answer; results are substring matches only", file=sys.stderr)
+    return False
+
+
+def die(msg: str, code: int = 1) -> None:
+    print(f"memory: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def require_field() -> None:
+    if not FIELD_DIR.is_dir():
+        die("no .memory/ directory. Run: memory doctor --fix")
+
+
+# --- search-side commands ---------------------------------------------------
+
+
+def filter_results(results: list[dict]) -> list[dict]:
+    """Drop index.md: its introduction text outranks real pages for generic queries."""
+    return [r for r in results if r.get("filename") != "index.md"]
+
+
+def distance_text(r: dict) -> str:
+    """Substring fallback results carry no distance."""
+    d = r.get("distance")
+    return f"distance {d:.3f}" if isinstance(d, (int, float)) else "substring match"
+
+
+def search_json(query: str) -> list[dict]:
+    env = tool_env()
+    require_host(env)
+    proc = tool("search", "--json", query, check=False)
+    if proc.returncode not in (0, 1):
+        die(proc.stderr.strip() or "search failed")
+    try:
+        results = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError:
+        results = []
+    return filter_results(results)
+
+
+def cmd_search(args: argparse.Namespace) -> None:
+    require_field()
+    results = search_json(args.query)
+    if args.json:
+        for r in results:
+            r["signals"] = [{"signal": sig, "reason": reason} for sig, reason in suspicion(page_frontmatter(r["filename"]))]
+        print(json.dumps(results, indent=2))
+        return
+    if not results:
+        print("no matching pages")
+        return
+    for r in results:
+        # refs and age only: a git lookup and a date compare. Checks run in doubt.
+        signals = suspicion(page_frontmatter(r["filename"]))
+        print(f"{r['filename']}: {r.get('summary', '')} ({distance_text(r)}){marker(signals)}")
+
+
+def cmd_pull(args: argparse.Namespace) -> None:
+    require_field()
+    results = search_json(args.query)
+    if not results:
+        print("no matching pages")
+        return
+    proc = tool("read", "--no-line-numbers", *[r["filename"] for r in results])
+    sys.stdout.write(proc.stdout)
+
+
+def cmd_read(args: argparse.Namespace) -> None:
+    require_field()
+    proc = tool("read", "--no-line-numbers", *args.pages, check=False)
+    sys.stdout.write(proc.stdout)
+    if proc.returncode:
+        die(proc.stderr.strip() or "read failed", proc.returncode)
+
+
+# --- pages and frontmatter --------------------------------------------------
+
+
+def now_iso() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_page(text: str) -> tuple[dict, str]:
+    """Split a page into (frontmatter dict, body). No frontmatter gives ({}, text)."""
+    if not text.startswith("---\n"):
+        return {}, text
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        return {}, text
+    fm = yaml.safe_load(text[4:end]) or {}
+    return (fm if isinstance(fm, dict) else {}), text[end + 5 :]
+
+
+class _Quoted(str):
+    pass
+
+
+def _quoted_representer(dumper, value):
+    return dumper.represent_scalar("tag:yaml.org,2002:str", str(value), style="'")
+
+
+yaml.add_representer(_Quoted, _quoted_representer)
+
+
+def render_page(fm: dict, body: str) -> str:
+    """Frontmatter with datetimes quoted, as the spec requires for YAML 1.1 parsers."""
+    out = {}
+    for key, value in fm.items():
+        if key in ("created", "updated", "verified") and isinstance(value, str):
+            value = _Quoted(value)
+        out[key] = value
+    dumped = yaml.dump(out, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    return f"---\n{dumped}---\n{body if body.endswith(chr(10)) else body + chr(10)}"
+
+
+def git(*args: str, cwd: Path | None = None) -> str | None:
+    cwd = cwd or ROOT
+    try:
+        return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+
+def fill_ref(ref: str, root: Path | None = None) -> str:
+    """'path' becomes 'path@sha' of the last commit touching it. 'path@sha' is kept."""
+    root = root or ROOT
+    if "@" in ref:
+        path, sha = ref.rsplit("@", 1)
+        if not SHA_RE.match(sha):
+            die(f"ref {ref!r}: sha must be 7 to 40 hex digits")
+        return ref
+    if not (root / ref).exists():
+        die(f"ref {ref!r}: no such file in this repository")
+    sha = git("log", "-1", "--format=%h", "--", ref, cwd=root)
+    if not sha:
+        die(f"ref {ref!r}: not committed yet, so it has no sha to cite")
+    return f"{ref}@{sha}"
+
+
+def validate_page(name: str, fm: dict, body: str) -> list[str]:
+    """Errors are fatal. Warnings are returned with a 'warning:' prefix."""
+    problems = []
+    if not PAGE_RE.match(name):
+        problems.append(f"page name {name!r} must be lowercase letters, digits, hyphens, ending .md")
+    if name == "index.md":
+        problems.append("index.md is the introduction; write pages under other names")
+    if not fm.get("summary"):
+        problems.append("summary is required; it is what search prints")
+    if not fm.get("topics"):
+        problems.append("topics is required; one or two short tags")
+    if fm.get("kind") not in KINDS:
+        problems.append(f"kind must be one of {', '.join(KINDS)}")
+    if "## Sources" not in body and "## sources" not in body.lower():
+        problems.append("warning: no '## Sources' section; a page without sources cannot be re-verified")
+    size = len(render_page(fm, body).encode())
+    if size > PAGE_LIMIT:
+        problems.append(f"warning: page is {size} bytes, over the {PAGE_LIMIT} byte soft limit; split it")
+    return problems
+
+
+def list_pages(field: Path | None = None) -> list[Path]:
+    field = field or FIELD_DIR
+    return sorted(p for p in field.glob("*.md") if p.name != "index.md")
+
+
+def regenerate_index(field: Path | None = None) -> None:
+    """Rewrite the generated half of index.md: one line per topic with its page count."""
+    field = field or FIELD_DIR
+    index_md = field / "index.md"
+    text = index_md.read_text() if index_md.is_file() else INDEX_TEMPLATE
+    head = text.split(GENERATED_MARK, 1)[0].rstrip("\n")
+    counts: dict[str, int] = {}
+    for page in list_pages(field):
+        fm, _ = parse_page(page.read_text())
+        for topic in fm.get("topics") or []:
+            counts[str(topic)] = counts.get(str(topic), 0) + 1
+    lines = [f"- {t} ({n})" for t, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    body = "\n".join(lines) if lines else "(no pages yet)"
+    n = len(list_pages(field))
+    stamp = f"<!-- memory format {FORMAT}, written by memory {plugin_commit()} on {datetime.now(UTC):%Y-%m-%d} -->"
+    index_md.write_text(f"{head}\n\n{GENERATED_MARK}\n{stamp}\n\nTopics across {n} page{'' if n == 1 else 's'}:\n\n{body}\n")
+
+
+# --- suspicion --------------------------------------------------------------
+
+CHECK_TIMEOUT = 10
+
+
+def ref_changed(ref: str, root: Path | None = None) -> str | None:
+    """Reason text if the cited file changed since the cited commit, else None."""
+    root = root or ROOT
+    if "@" not in ref:
+        return f"{ref}: no commit cited"
+    path, sha = ref.rsplit("@", 1)
+    if not SHA_RE.match(sha):
+        return f"{ref}: cited sha is not hex"
+    try:
+        out = subprocess.run(
+            ["git", "log", "--oneline", f"{sha}..HEAD", "--", path],
+            cwd=root, capture_output=True, text=True, check=True,
+        ).stdout
+    except FileNotFoundError:
+        return None
+    except subprocess.CalledProcessError:
+        return f"{path}: cited commit {sha} not found in history"
+    n = len(out.splitlines())
+    if n:
+        return f"{path} changed since cited ({n} commit{'s' if n > 1 else ''})"
+    if not (root / path).exists():
+        return f"{path} no longer exists"
+    return None
+
+
+def age_days(fm: dict, now: datetime | None = None) -> int | None:
+    stamp = fm.get("verified") or fm.get("updated") or fm.get("created")
+    if not stamp:
+        return None
+    try:
+        then = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return ((now or datetime.now(UTC)) - then).days
+
+
+def age_hint(fm: dict, now: datetime | None = None) -> str | None:
+    """A glance hint when an unverified page is older than its kind allows. Never a suspicion."""
+    limit = KINDS.get(str(fm.get("kind")))
+    days = age_days(fm, now)
+    if limit is None or days is None or days <= limit:
+        return None
+    return f"{fm.get('kind')} page, {days} days since {'verified' if fm.get('verified') else 'written'}"
+
+
+def run_check(command: str) -> str | None:
+    """Reason text if the page's self-check fails. Only doubt calls this."""
+    try:
+        proc = subprocess.run(command, shell=True, cwd=ROOT, capture_output=True, text=True, timeout=CHECK_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return f"check timed out after {CHECK_TIMEOUT}s: {command}"
+    if proc.returncode:
+        return f"check failed (exit {proc.returncode}): {command}"
+    return None
+
+
+# Signal ranks, strongest first. doubt sorts by these.
+RANK = {"ref": 0, "check": 1, "age": 2}
+
+
+def suspicion(fm: dict, root: Path | None = None, run_checks: bool = False, now: datetime | None = None) -> list[tuple[str, str]]:
+    """List of (signal, reason). 'ref' and 'check' mean suspect; 'age' means glance."""
+    root = root or ROOT
+    found: list[tuple[str, str]] = []
+    for ref in fm.get("refs") or []:
+        reason = ref_changed(str(ref), root)
+        if reason:
+            found.append(("ref", reason))
+    if run_checks and fm.get("check"):
+        reason = run_check(str(fm["check"]))
+        if reason:
+            found.append(("check", reason))
+    hint = age_hint(fm, now)
+    if hint:
+        found.append(("age", hint))
+    return sorted(found, key=lambda f: RANK[f[0]])
+
+
+def marker(signals: list[tuple[str, str]]) -> str:
+    """One line of markers for search output."""
+    parts = [("glance: " if sig == "age" else "suspect: ") + reason for sig, reason in signals]
+    return "  " + "; ".join(parts) if parts else ""
+
+
+def page_frontmatter(name: str) -> dict:
+    path = FIELD_DIR / name
+    if not path.is_file():
+        return {}
+    fm, _ = parse_page(path.read_text())
+    return fm
+
+
+def cmd_doubt(args: argparse.Namespace) -> None:
+    """Pages with evidence they may be wrong, strongest signal first."""
+    require_field()
+    rows = []
+    for page in list_pages():
+        fm, _ = parse_page(page.read_text())
+        signals = suspicion(fm, run_checks=True)
+        if signals or args.all:
+            rows.append((page.name, fm.get("summary", ""), signals))
+    rows.sort(key=lambda r: (RANK[r[2][0][0]] if r[2] else 99, r[0]))
+    if not rows:
+        print("no suspect pages")
+        return
+    for name, summary, signals in rows:
+        print(f"{name}: {summary}")
+        for sig, reason in signals:
+            print(f"    {'glance' if sig == 'age' else 'suspect'}: {reason}")
+        if not signals:
+            print("    clean")
+
+
+# --- write-side commands ----------------------------------------------------
+
+
+def reindex() -> None:
+    """Synchronous index so the next search sees the change."""
+    env = tool_env()
+    if not require_host(env):
+        return
+    proc = tool("index", check=False)
+    if proc.returncode:
+        die(proc.stderr.strip() or "index failed")
+
+
+def cmd_write(args: argparse.Namespace) -> None:
+    require_field()
+    body = sys.stdin.read()
+    if not body.strip():
+        die("empty body on stdin")
+    fm: dict = {"title": args.title, "summary": args.summary}
+    fm["topics"] = [t.strip() for t in args.topics.split(",") if t.strip()]
+    fm["kind"] = args.kind
+    if args.ref:
+        fm["refs"] = [fill_ref(r) for r in args.ref]
+    if args.check:
+        fm["check"] = args.check
+    problems = validate_page(args.page, fm, body)
+    errors = [p for p in problems if not p.startswith("warning:")]
+    for p in problems:
+        print(f"memory: {p}", file=sys.stderr)
+    if errors:
+        sys.exit(1)
+    proc = tool("write", "--force", args.page, stdin=render_page(fm, body), check=False)
+    if proc.returncode:
+        die(proc.stderr.strip() or "write failed")
+    print(proc.stdout.strip())
+    regenerate_index()
+    reindex()
+
+
+def cmd_verify(args: argparse.Namespace) -> None:
+    """The agent re-confirmed the page. Record when and refresh its refs to the current commits."""
+    require_field()
+    page = FIELD_DIR / args.page
+    if not page.is_file():
+        die(f"no such page {args.page}")
+    fm, body = parse_page(page.read_text())
+    fm["verified"] = now_iso()
+    if fm.get("refs"):
+        # re-confirmed against the cited files as they are now, so cite them as they are now
+        fm["refs"] = [fill_ref(str(r).rsplit("@", 1)[0]) for r in fm["refs"]]
+    proc = tool("write", "--force", args.page, stdin=render_page(fm, body), check=False)
+    if proc.returncode:
+        die(proc.stderr.strip() or "verify failed")
+    print(f"verified {args.page} at {fm['verified']}")
+    reindex()
+
+
+def cmd_delete(args: argparse.Namespace) -> None:
+    require_field()
+    proc = tool("delete", args.page, check=False)
+    if proc.returncode:
+        die(proc.stderr.strip() or "delete failed")
+    print(proc.stdout.strip())
+    regenerate_index()
+    reindex()
+
+
+def cmd_index(args: argparse.Namespace) -> None:
+    require_field()
+    regenerate_index()
+    reindex()
+    print("index current")
+
+
+# --- cost -------------------------------------------------------------------
+
+
+def tokens(nbytes: int) -> int:
+    """Rough estimate: four bytes per token for English prose."""
+    return (nbytes + 3) // 4
+
+
+def cmd_cost(args: argparse.Namespace) -> None:
+    require_field()
+    index_md = FIELD_DIR / "index.md"
+    rows = []
+    n = len(index_md.read_bytes()) if index_md.is_file() else 0
+    rows.append(("index.md", n))
+    results = search_json(args.query)[:5]
+    line = "\n".join(f"{r['filename']}: {r.get('summary','')} ({distance_text(r)})" for r in results)
+    rows.append((f"search '{args.query}', {len(results)} results", len(line.encode())))
+    pages = sorted(FIELD_DIR.glob("*.md"))
+    rows.append((f"all {len(pages)} pages", sum(len(p.read_bytes()) for p in pages)))
+    width = max(len(r[0]) for r in rows)
+    for label, nbytes in rows:
+        print(f"{label:<{width}}  {nbytes:>7} bytes  ~{tokens(nbytes):>6} tokens")
+
+
+# --- format and init --------------------------------------------------------
+
+
+def read_format(field: Path | None = None) -> int | None:
+    field = field or FIELD_DIR
+    index_md = field / "index.md"
+    if not index_md.is_file():
+        return None
+    m = FORMAT_RE.search(index_md.read_text())
+    return int(m.group(1)) if m else 0
+
+
+def check_format() -> None:
+    found = read_format()
+    if found is None:
+        return
+    if found > FORMAT:
+        die(f"this repository's memory was last written by a newer memory plugin (format {found}, this is {FORMAT}); update the plugin", 2)
+    if found < FORMAT:
+        regenerate_index()
+        print(f"memory: migrated .memory from format {found} to {FORMAT}", file=sys.stderr)
+
+
+def cmd_init(args: argparse.Namespace) -> None:
+    made = []
+    if not FIELD_DIR.is_dir():
+        FIELD_DIR.mkdir()
+        (FIELD_DIR / "index.md").write_text(INDEX_TEMPLATE)
+        if shutil.which("memoryfield-tool"):
+            write_config()
+            tool("write", "--force", "index.md", stdin=INDEX_TEMPLATE, check=False)
+        made.append(".memory/")
+    regenerate_index()
+    claude_md = ROOT / "CLAUDE.md"
+    text = claude_md.read_text() if claude_md.is_file() else ""
+    if CLAUDE_MD_MARK not in text:
+        claude_md.write_text(text.rstrip("\n") + "\n" + CLAUDE_MD_PARAGRAPH if text else CLAUDE_MD_PARAGRAPH.lstrip("\n"))
+        made.append("CLAUDE.md paragraph")
+    print("initialized: " + ", ".join(made) if made else "already initialized; nothing changed")
+
+
+# --- doctor -----------------------------------------------------------------
+
+INDEX_TEMPLATE = """---
+title: Memory
+summary: What this agent has learned on its own, searched before investigating.
+---
+
+# Memory
+
+Pages here are what this agent learned on its own. Search with
+`memory search QUERY` before investigating anything. Documents the
+creator asked for or reviewed live in `docs/`, not here.
+
+<!-- generated below -->
+"""
+
+
+def install_tool(pin: dict[str, str]) -> bool:
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("pysqlite3-binary>=0.5 ; sys_platform == 'never'\n")
+        overrides = f.name
+    spec = f"memoryfield-tool @ git+{pin['tool_repo']}@{pin['tool_rev']}"
+    cmd = ["uv", "tool", "install", "--force", "--python", "3.12", "--overrides", overrides, spec]
+    print("memory: " + " ".join(cmd))
+    return subprocess.run(cmd).returncode == 0
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    pin = read_pin()
+    if args.brief:
+        if not FIELD_DIR.is_dir():
+            return
+        found = read_format()
+        if found is not None and found > FORMAT:
+            print(f"memory: .memory was written by a newer memory plugin (format {found}); update the plugin")
+            return
+        n = len(list_pages())
+        print(f"memory: ok, {n} page{'' if n == 1 else 's'}. Search before you investigate: `memory search QUERY`.")
+        return
+    ok = True
+
+    def report(label: str, good: bool, fix: str = "") -> bool:
+        nonlocal ok
+        print(f"{'ok ' if good else 'FAIL'} {label}" + ("" if good else f"  ({fix})" if fix else ""))
+        ok = ok and good
+        return good
+
+    if not report("uv on PATH", shutil.which("uv") is not None, "install uv: https://docs.astral.sh/uv/"):
+        sys.exit(1)
+
+    have_tool = shutil.which("memoryfield-tool") is not None
+    rev = installed_rev() if have_tool else None
+    pinned = have_tool and pin_matches(pin, rev)
+    if not pinned and args.fix:
+        pinned = install_tool(pin) and pin_matches(pin, installed_rev())
+    report(f"memoryfield-tool at {pin['tool_rev'][:7]}", pinned, "memory doctor --fix")
+
+    base = normalize_host(os.environ.get("OLLAMA_HOST"))
+    up = host_answers(base)
+    if not up and args.fix and platform.system() == "Darwin" and shutil.which("brew"):
+        if shutil.which("ollama") is None:
+            subprocess.run(["brew", "install", "ollama"])
+        subprocess.run(["brew", "services", "start", "ollama"])
+        for _ in range(15):
+            if host_answers(base):
+                up = True
+                break
+            import time
+            time.sleep(1)
+    fix = "brew install ollama && brew services start ollama" if platform.system() == "Darwin" else "curl -fsSL https://ollama.com/install.sh | sh"
+    report(f"ollama answers at {base}", up, fix)
+
+    has_model = up and model_present(base, pin["model"])
+    if up and not has_model and args.fix:
+        env = dict(os.environ, OLLAMA_HOST=base)
+        has_model = subprocess.run(["ollama", "pull", pin["model"]], env=env).returncode == 0
+    report(f"model {pin['model']} pulled", has_model, f"OLLAMA_HOST={base} ollama pull {pin['model']}")
+
+    report(f"field at {FIELD_DIR}", FIELD_DIR.is_dir(), "memory init")
+
+    claude_md = ROOT / "CLAUDE.md"
+    report("CLAUDE.md has the memory paragraph", claude_md.is_file() and CLAUDE_MD_MARK in claude_md.read_text(), "memory init")
+    if FIELD_DIR.is_dir() and pinned:
+        write_config()
+        proc = tool("validate", check=False)
+        report("field validates", proc.returncode == 0, (proc.stdout + proc.stderr).strip().replace("\n", " "))
+        if args.fix and up:
+            reindex()
+
+    sys.exit(0 if ok else 1)
+
+
+# --- main -------------------------------------------------------------------
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(prog="memory", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("search", help="ranked pages for a query")
+    p.add_argument("query")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_search)
+
+    p = sub.add_parser("pull", help="full text of matching pages")
+    p.add_argument("query")
+    p.set_defaults(func=cmd_pull)
+
+    p = sub.add_parser("read", help="print pages")
+    p.add_argument("pages", nargs="+")
+    p.set_defaults(func=cmd_read)
+
+    p = sub.add_parser("write", help="write a page; body on stdin")
+    p.add_argument("page", help="filename, lowercase-hyphenated, ending .md")
+    p.add_argument("--title", required=True)
+    p.add_argument("--summary", required=True, help="one sentence; this is what search prints")
+    p.add_argument("--topics", required=True, help="comma-separated, one or two short tags")
+    p.add_argument("--kind", required=True, choices=list(KINDS), help="environment, procedure, finding, or decision")
+    p.add_argument("--ref", action="append", help="repo path, or path@sha; repeatable. Bare paths get the last commit's sha")
+    p.add_argument("--check", help="read-only shell command; exit 0 means the page still holds")
+    p.set_defaults(func=cmd_write)
+
+    p = sub.add_parser("verify", help="record that a page was re-confirmed just now")
+    p.add_argument("page")
+    p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("delete", help="remove a page")
+    p.add_argument("page")
+    p.set_defaults(func=cmd_delete)
+
+    p = sub.add_parser("doubt", help="pages with evidence they may be wrong, strongest first; runs check commands")
+    p.add_argument("--all", action="store_true", help="list clean pages too")
+    p.set_defaults(func=cmd_doubt)
+
+    p = sub.add_parser("index", help="full reindex")
+    p.set_defaults(func=cmd_index)
+
+    p = sub.add_parser("cost", help="bytes and tokens of index.md and a search")
+    p.add_argument("--query", default="how to install and configure tools")
+    p.set_defaults(func=cmd_cost)
+
+    p = sub.add_parser("doctor", help="check prerequisites; --fix installs them")
+    p.add_argument("--fix", action="store_true")
+    p.add_argument("--brief", action="store_true", help="one line, no host probe; nothing if no field")
+    p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("init", help="create .memory/ and the CLAUDE.md paragraph")
+    p.set_defaults(func=cmd_init)
+
+    args = parser.parse_args(argv)
+    set_root(project_root())
+    if args.command not in ("doctor", "init"):
+        check_format()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

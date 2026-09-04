@@ -1,0 +1,4 @@
+tool_repo=https://github.com/calpaterson/memoryfield-tool
+tool_rev=3e447e1d5c4840028cce3c05e70e7349923fc634
+model=nomic-embed-text
+model_code=nomic-embed-text-v1.5
