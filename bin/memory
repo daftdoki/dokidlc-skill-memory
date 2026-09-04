@@ -21,7 +21,7 @@ Usage:
   memory index                 full reindex and index.md regeneration
   memory cost                  bytes and tokens of index.md and a search
   memory doctor [--fix|--brief] check or install prerequisites
-  memory setup [--local|--host URL]  choose where embeddings come from, once per machine
+  memory setup                 substring (default) or semantic search, and its host; once per machine
   memory init                  create .memory/ and the CLAUDE.md paragraph
 """
 
@@ -114,6 +114,17 @@ def write_config_file(values: dict) -> Path:
     lines = [f'{k} = "{v}"' if isinstance(v, str) else f"{k} = {str(v).lower()}" for k, v in values.items()]
     path.write_text("\n".join(lines) + "\n")
     return path
+
+
+def semantic_enabled() -> bool:
+    """Semantic search is opt-in. An exported OLLAMA_HOST counts as opting in."""
+    if os.environ.get("OLLAMA_HOST"):
+        return True
+    return bool(read_config().get("semantic", False))
+
+
+# A closed port: the tool's client fails at once and falls back to substring search.
+NO_EMBEDDING_HOST = "http://127.0.0.1:9"
 
 
 def embedding_host() -> tuple[str, str]:
@@ -268,7 +279,7 @@ def tool_env(root: Path | None = None) -> dict[str, str]:
     root = root or ROOT
     env = dict(os.environ)
     env["MEMORYFIELD_TOOL_CONFIG"] = str(write_config(root))
-    env["OLLAMA_HOST"] = embedding_host()[0]
+    env["OLLAMA_HOST"] = embedding_host()[0] if semantic_enabled() else NO_EMBEDDING_HOST
     return env
 
 
@@ -288,6 +299,8 @@ def tool(*args: str, stdin: str | None = None, root: Path | None = None, check: 
 
 def require_host(env: dict[str, str]) -> bool:
     """True when embeddings will work. Prints one line and returns False otherwise."""
+    if not semantic_enabled():
+        return False
     base, source = embedding_host()
     if host_answers(base):
         return True
@@ -341,7 +354,7 @@ def cmd_search(args: argparse.Namespace) -> None:
         print(json.dumps(results, indent=2))
         return
     if not results:
-        print("no matching pages")
+        print("no matching pages" + ("" if semantic_enabled() else " (substring search; `memory setup --semantic` enables meaning-based search)"))
         return
     for r in results:
         # refs and age only: a git lookup and a date compare. Checks run in doubt.
@@ -597,7 +610,9 @@ def cmd_doubt(args: argparse.Namespace) -> None:
 
 
 def reindex() -> None:
-    """Synchronous index so the next search sees the change."""
+    """Synchronous index so the next search sees the change. Nothing to do in substring mode."""
+    if not semantic_enabled():
+        return
     env = tool_env()
     if not require_host(env):
         return
@@ -736,29 +751,40 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 
 def cmd_setup(args: argparse.Namespace) -> None:
-    """Choose where embeddings come from: ollama on this machine, or a remote host."""
+    """Choose substring or semantic search and, for semantic, where embeddings come from."""
     pin = read_pin()
     if args.local and args.host:
         die("choose --local or --host URL, not both")
-    if args.host:
-        host = normalize_host(args.host)
-    elif args.local:
-        host = normalize_host(DEFAULT_HOST)
-    elif sys.stdin.isatty():
+    if args.semantic and args.substring:
+        die("choose --semantic or --substring, not both")
+    semantic: bool | None = True if (args.semantic or args.local or args.host) else (False if args.substring else None)
+    host: str | None = normalize_host(args.host) if args.host else (normalize_host(DEFAULT_HOST) if args.local else None)
+    if semantic is None:
+        if not sys.stdin.isatty():
+            die("not a terminal; pass --substring, or --semantic with --local or --host URL")
+        print("Search works two ways. Substring search needs nothing and matches words you type.")
+        print("Semantic search matches meaning, and needs ollama with an embedding model.")
+        semantic = input("Enable semantic search? [y/N]: ").strip().lower().startswith("y")
+    if semantic and host is None:
+        if not sys.stdin.isatty():
+            die("semantic search needs --local or --host URL")
         print("Where should embeddings come from?")
         print(f"  1. ollama on this machine ({normalize_host(DEFAULT_HOST)})")
         print("  2. a remote ollama host")
         choice = input("1 or 2: ").strip()
-        if choice == "2":
-            host = normalize_host(input("host, like http://frame:11434: ").strip())
-        else:
-            host = normalize_host(DEFAULT_HOST)
-    else:
-        die("not a terminal; pass --local or --host URL")
-    path = write_config_file({"embedding_host": host})
-    print(f"embedding host {host} written to {path}")
+        host = normalize_host(input("host, like http://frame:11434: ").strip()) if choice == "2" else normalize_host(DEFAULT_HOST)
+    values = {"semantic": semantic}
+    if host:
+        values["embedding_host"] = host
+    elif read_config().get("embedding_host"):
+        values["embedding_host"] = read_config()["embedding_host"]
+    path = write_config_file(values)
+    if not semantic:
+        print(f"substring search; written to {path}. `memory setup --semantic --local` or `--host URL` enables semantic search later.")
+        return
+    print(f"semantic search with embedding host {host} written to {path}")
     if os.environ.get("OLLAMA_HOST"):
-        print(f"note: OLLAMA_HOST is exported in this shell and wins over the setup file")
+        print("note: OLLAMA_HOST is exported in this shell and wins over the setup file")
     if not host_answers(host):
         print(f"{host} does not answer yet. " + ("Run `memory doctor --fix` to install ollama here." if host == normalize_host(DEFAULT_HOST) else "Start ollama there, then run `memory doctor`."))
         return
@@ -825,8 +851,11 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         pinned = install_tool(pin) and pin_matches(pin, installed_rev())
     report(f"memoryfield-tool at {pin['tool_rev'][:7]}", pinned, "memory doctor --fix")
 
+    if not semantic_enabled():
+        report("search mode: substring (memory setup --semantic enables meaning-based search)", True)
+        up = False
     base, source = embedding_host()
-    up = host_answers(base)
+    up = semantic_enabled() and host_answers(base)
     local = any(h in base for h in ("127.0.0.1", "localhost", "[::1]"))
     if not up and args.fix and local and platform.system() == "Darwin" and shutil.which("brew"):
         if shutil.which("ollama") is None:
@@ -842,13 +871,15 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         fix = "brew install ollama && brew services start ollama" if platform.system() == "Darwin" else "curl -fsSL https://ollama.com/install.sh | sh"
     else:
         fix = f"start ollama on that host, or run `memory setup` to choose another"
-    report(f"embedding host {base} answers (from {source})", up, fix)
+    if semantic_enabled():
+        report(f"embedding host {base} answers (from {source})", up, fix)
 
     has_model = up and model_present(base, pin["model"])
     if up and not has_model and args.fix and shutil.which("ollama"):
         env = dict(os.environ, OLLAMA_HOST=base)
         has_model = subprocess.run(["ollama", "pull", pin["model"]], env=env).returncode == 0
-    report(f"model {pin['model']} present on {base}", has_model, f"OLLAMA_HOST={base} ollama pull {pin['model']}")
+    if semantic_enabled():
+        report(f"model {pin['model']} present on {base}", has_model, f"OLLAMA_HOST={base} ollama pull {pin['model']}")
 
     report(f"field at {FIELD_DIR}", FIELD_DIR.is_dir(), "memory init")
 
@@ -860,6 +891,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         report("field validates", proc.returncode == 0, (proc.stdout + proc.stderr).strip().replace("\n", " "))
         if args.fix and up:
             reindex()
+    idx = cache_dir() / "memoryfield-tool" / "indexes"
+    print(f"     index cache: {idx} (derived, never committed; rebuilt by `memory index`)")
 
     sys.exit(0 if ok else 1)
 
@@ -918,8 +951,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--brief", action="store_true", help="one line, no host probe; nothing if no field")
     p.set_defaults(func=cmd_doctor)
 
-    p = sub.add_parser("setup", help="choose the embedding host: --local, --host URL, or answer a prompt")
-    p.add_argument("--local", action="store_true"); p.add_argument("--host")
+    p = sub.add_parser("setup", help="substring or semantic search, and the embedding host; prompts if no flags")
+    p.add_argument("--substring", action="store_true", help="the default: no ollama, matches words")
+    p.add_argument("--semantic", action="store_true", help="meaning-based search through ollama")
+    p.add_argument("--local", action="store_true", help="embeddings from ollama on this machine (implies --semantic)")
+    p.add_argument("--host", help="embeddings from a remote ollama host (implies --semantic)")
     p.set_defaults(func=cmd_setup)
 
     p = sub.add_parser("init", help="create .memory/ and the CLAUDE.md paragraph")

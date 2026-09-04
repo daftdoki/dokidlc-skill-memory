@@ -108,9 +108,8 @@ generated topic list.
 
 - Claude Code 2.1.195 or later
 - `uv` on PATH (https://docs.astral.sh/uv/)
-- [ollama](https://ollama.com) with the `nomic-embed-text` model, either
-  on this machine or on a host you can reach. Without it, search falls
-  back to substring matching.
+- Optional, for semantic search: [ollama](https://ollama.com) with the
+  `nomic-embed-text` model, on this machine or on a host you can reach.
 - A git repository
 
 ## Installation
@@ -122,21 +121,20 @@ From the `dokidlc` marketplace, once per machine:
 claude plugin install memory@dokidlc
 ```
 
-Then, once per machine, choose where embeddings come from:
+Then, once per machine, choose how search works:
 
 ```
-memory setup           asks: ollama on this machine, or a remote host
-memory setup --local   or answer without the prompt
-memory setup --host http://frame:11434
-memory doctor --fix    installs memoryfield-tool at the pinned commit; for a
-                       local host on macOS also ollama and the model, on Linux
-                       prints the command; for a remote host checks it answers
+memory setup                       asks: substring or semantic, and for semantic, which host
+memory setup --substring           the default; needs nothing
+memory setup --local               semantic, embeddings from ollama on this machine
+memory setup --host http://frame:11434   semantic, embeddings from a remote ollama
+memory doctor --fix                installs memoryfield-tool at the pinned commit; for a
+                                   local semantic host on macOS also ollama and the model
 ```
 
 The choice is saved in `~/.config/dokidlc-memory/config.toml`. An
-`OLLAMA_HOST` exported in the shell overrides it. A laptop that sleeps can
-point at an always-on host so embeddings work from anywhere on the network;
-the pages themselves never leave the repository.
+`OLLAMA_HOST` exported in the shell turns semantic search on and overrides
+the host. See "Two ways to search" below.
 
 Then in each repository:
 
@@ -161,6 +159,33 @@ The plugin still needs the `claude plugin install` line once per machine.
 
 Manual install, without the marketplace: clone this repository and start
 Claude Code with `claude --plugin-dir /path/to/dokidlc-skill-memory`.
+
+## Two ways to search
+
+**Substring search** is the default. It needs nothing installed. A query
+matches pages whose filename, title, or summary contain the words you
+typed, so it rewards good summaries and exact terms. It is fast, it works
+offline, and it is enough for a field of a few dozen pages that one agent
+wrote and knows the vocabulary of.
+
+**Semantic search** matches meaning. "Why does install fail on a mac"
+finds the page about a missing wheel even though none of those words are
+in it. It needs an embedding model, `nomic-embed-text`, served by ollama on
+this machine or on a host you can reach, and it costs about half a second
+per search on Apple Silicon and a little more over the network. Turn it on
+with `memory setup --local` or `memory setup --host URL`. If the host stops
+answering, search falls back to substring matching and says so.
+
+**The index.** Semantic search reads a vector index, one SQLite file per
+field, that memoryfield-tool builds from the pages. It lives in the
+machine's cache, `~/.cache/memoryfield-tool/indexes/` on Linux and
+`~/Library/Caches/memoryfield-tool/indexes/` on macOS, never in the
+repository. The pages in `.memory/` are the only source of truth. After
+every `memory write`, `verify`, or `delete` the wrapper rebuilds the index
+before returning, embedding only pages whose content changed. A fresh
+clone has no index; the first `memory index` or the first write builds it
+from scratch in a few seconds. Deleting the cache loses nothing. In
+substring mode no index exists and no embedding host is ever contacted.
 
 ## Built on memoryfields
 

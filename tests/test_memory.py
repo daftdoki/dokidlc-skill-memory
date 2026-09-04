@@ -297,9 +297,23 @@ def test_setup_writes_config(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
     monkeypatch.setattr(memory, "host_answers", lambda base, timeout=2.0: False)
     memory.main(["setup", "--host", "frame:11434"])
-    assert (tmp_path / "dokidlc-memory" / "config.toml").read_text() == 'embedding_host = "http://frame:11434"\n'
+    assert memory.read_config() == {"semantic": True, "embedding_host": "http://frame:11434"}
     assert "does not answer yet" in capsys.readouterr().out
     memory.main(["setup", "--local"])
     assert memory.read_config()["embedding_host"] == "http://127.0.0.1:11434"
+    memory.main(["setup", "--substring"])
+    assert memory.read_config()["semantic"] is False and memory.semantic_enabled() is False
+    assert memory.tool_env()["OLLAMA_HOST"] == memory.NO_EMBEDDING_HOST
+    monkeypatch.setenv("OLLAMA_HOST", "x:1")
+    assert memory.semantic_enabled() is True
+    monkeypatch.delenv("OLLAMA_HOST")
     with pytest.raises(SystemExit):
         memory.main(["setup", "--local", "--host", "x"])
+    with pytest.raises(SystemExit):
+        memory.main(["setup", "--semantic", "--substring"])
+
+
+def test_semantic_is_off_by_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    assert memory.semantic_enabled() is False

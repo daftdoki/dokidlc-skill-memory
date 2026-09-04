@@ -29,9 +29,12 @@ Outside a session:
 CLAUDE_PROJECT_DIR=/path/to/repo OLLAMA_HOST=127.0.0.1:11434 bin/memory search "query"
 ```
 
-## Embedding host
+## Search mode and embedding host
 
-Resolved in this order: `OLLAMA_HOST` in the environment, then
+Semantic search is off unless `semantic = true` in the setup file or
+`OLLAMA_HOST` is exported. In substring mode the wrapper points the tool at
+a closed port so its client fails at once and falls back, and it skips
+reindexing. The host, when semantic is on, is resolved in this order: `OLLAMA_HOST` in the environment, then
 `embedding_host` in `~/.config/dokidlc-memory/config.toml` (written by
 `memory setup`; `XDG_CONFIG_HOME` is honoured), then `127.0.0.1:11434`.
 `doctor` names the source. `doctor --fix` installs ollama only for a local

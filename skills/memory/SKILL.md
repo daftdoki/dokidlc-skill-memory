@@ -18,7 +18,7 @@ memory read PAGE.md                       one page
 memory doubt                              pages with evidence they may be wrong
 memory verify PAGE.md                     you re-confirmed it; record that and refresh its refs
 memory delete PAGE.md
-memory setup [--local|--host URL]         choose the embedding host, once per machine
+memory setup [--substring|--local|--host URL]   search mode and host, once per machine
 memory doctor --fix                       install or repair prerequisites
 memory init                               create .memory/ and the CLAUDE.md paragraph
 ```
@@ -41,10 +41,12 @@ printf 'What is true.\n\n## Sources\n\n- where you saw it, and when\n' | memory 
 
 ## Setup
 
-When `doctor` reports the embedding host does not answer, ask the creator
-whether embeddings should come from ollama on this machine or from a
-remote host, then run `memory setup --local` or `memory setup --host URL`
-with their answer. Never guess a host.
+Search is substring-only until `memory setup` says otherwise. When the
+creator wants meaning-based search, or `doctor` reports the embedding host
+does not answer, ask whether embeddings should come from ollama on this
+machine or from a remote host, then run `memory setup --local` or
+`memory setup --host URL` with their answer. `memory setup --substring`
+turns it back off. Never guess a host.
 
 ## When to search
 
