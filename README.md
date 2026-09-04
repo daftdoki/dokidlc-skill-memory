@@ -17,6 +17,35 @@ that search marks as suspect. Nothing in memory needs your approval, and
 nothing the creator asked for goes there. Memory is what the agent learned
 by itself; documents you review stay in `docs/`.
 
+## Why this, when Claude Code has a memory
+
+Claude Code's own memory lives in a directory under your home, outside the
+repository. It is per machine and per user, git never carries it, and it
+loads its index into every session. That is the right place for facts about
+the machine and preferences about you: which host this is, where the tools
+are installed, how you like to be spoken to.
+
+This plugin is for what the agent learns about the project: a quirk of a
+tool, a procedure that worked, a finding about the domain, a decision and
+its reason. That knowledge belongs with the code, in git, so it travels to
+every clone, every machine, and every collaborator, and so it can be
+diffed, reviewed, and rolled back like anything else in the repository. It
+is found by semantic search rather than loaded whole, so it stays cheap as
+it grows. And it can cite files at a commit, which is what lets a page be
+marked suspect when the thing it describes changes.
+
+The two coexist by content, not by mechanism:
+
+| Belongs in | Examples |
+|---|---|
+| Claude Code's memory | this machine's hostname, local paths, the creator's tone preference, a fact true only here |
+| `.memory/` (this plugin) | the tool that fails to install on macOS and the fix, the port a service listens on and why, the trust model the creator chose |
+| `docs/` | anything the creator asked for or reviewed: designs, research, decisions with their reasoning |
+
+A memory page may cite a document in `docs/`. A document never cites
+memory. When the agent finds something in memory that the creator should
+review, it proposes a document and the page cites it.
+
 ## Usage
 
 Mostly you do nothing. The agent searches and writes as it works. You can
