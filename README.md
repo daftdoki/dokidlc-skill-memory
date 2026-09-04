@@ -74,24 +74,35 @@ memory delete stale-page.md
 memory cost                                         bytes and tokens of index and search
 ```
 
-Writing a page, body on stdin:
+### What a page looks like
+
+The agent writes pages with `memory write`; you rarely will. Each page is
+one topic, under 8KB, with frontmatter the search and the trust rules read:
 
 ```
-printf 'The tool hangs 75s on a silent host.\n\n## Sources\n\n- timed 2026-09-01\n' | \
-  memory write ollama-host-silent-hang.md \
-    --title "A silent OLLAMA_HOST hangs the tool" \
-    --summary "Why the wrapper probes the host with a two-second timeout" \
-    --topics ollama,memoryfield-tool \
-    --kind finding \
-    --ref docs/research.md \
-    --check "curl -s localhost:11434 >/dev/null"
+---
+title: A silent OLLAMA_HOST hangs the tool
+summary: Why the wrapper probes the host with a two-second timeout   # what search prints
+topics: [ollama, memoryfield-tool]                                    # feed the index
+kind: finding                # environment, procedure, finding, or decision
+refs: [docs/research.md@61b6f00]   # a file at a commit; if it changes, the page is suspect
+check: curl -s localhost:11434 >/dev/null   # optional; if it fails, the page is suspect
+verified: '2026-09-04T22:42:52Z'            # when the agent last re-confirmed it
+---
+The tool hangs about 75 seconds on a host that accepts a connection and
+goes silent, because the client has no timeout.
+
+## Sources
+
+- timed against /api/embed, 2026-09-01
 ```
 
-`--kind` is `environment`, `procedure`, `finding`, or `decision`, and sets
-how soon an unverified page earns a "glance" hint. `--ref` cites a file at
-its current commit; search marks the page `suspect` if that file changes.
-`--check` is a read-only command that `doubt` runs; a failure marks the
-page suspect.
+`kind` sets how soon an unverified page earns a "glance" hint in search:
+30 days for `environment`, 90 for `procedure`, 180 for `finding`, never for
+`decision`. A glance is a suggestion to skim; only a changed ref, a failed
+check, or a contradiction makes a page suspect. `index.md` is the one page
+the agent does not write: its top half is yours, its bottom half is a
+generated topic list.
 
 ## Requirements
 
