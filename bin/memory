@@ -21,6 +21,7 @@ Usage:
   memory index                 full reindex and index.md regeneration
   memory cost                  bytes and tokens of index.md and a search
   memory doctor [--fix|--brief] check or install prerequisites
+  memory setup [--local|--host URL]  choose where embeddings come from, once per machine
   memory init                  create .memory/ and the CLAUDE.md paragraph
 """
 
@@ -89,6 +90,41 @@ def plugin_commit() -> str:
         return PLUGIN_ROOT.name[:7]
     return "unknown"
 DEFAULT_HOST = "127.0.0.1:11434"
+
+
+def config_file() -> Path:
+    """Per-machine settings, because the embedding host is a fact about the machine."""
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base / "dokidlc-memory" / "config.toml"
+
+
+def read_config() -> dict:
+    path = config_file()
+    if not path.is_file():
+        return {}
+    try:
+        return tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError:
+        return {}
+
+
+def write_config_file(values: dict) -> Path:
+    path = config_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f'{k} = "{v}"' if isinstance(v, str) else f"{k} = {str(v).lower()}" for k, v in values.items()]
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def embedding_host() -> tuple[str, str]:
+    """(base url, where it came from): OLLAMA_HOST, then memory setup, then the local default."""
+    env = os.environ.get("OLLAMA_HOST")
+    if env:
+        return normalize_host(env), "OLLAMA_HOST"
+    cfg = read_config().get("embedding_host")
+    if cfg:
+        return normalize_host(str(cfg)), "memory setup"
+    return normalize_host(None), "default"
 HOST_TIMEOUT = 2.0
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -232,7 +268,7 @@ def tool_env(root: Path | None = None) -> dict[str, str]:
     root = root or ROOT
     env = dict(os.environ)
     env["MEMORYFIELD_TOOL_CONFIG"] = str(write_config(root))
-    env["OLLAMA_HOST"] = normalize_host(os.environ.get("OLLAMA_HOST"))
+    env["OLLAMA_HOST"] = embedding_host()[0]
     return env
 
 
@@ -252,10 +288,10 @@ def tool(*args: str, stdin: str | None = None, root: Path | None = None, check: 
 
 def require_host(env: dict[str, str]) -> bool:
     """True when embeddings will work. Prints one line and returns False otherwise."""
-    base = env["OLLAMA_HOST"]
+    base, source = embedding_host()
     if host_answers(base):
         return True
-    print(f"memory: embedding host {base} does not answer; results are substring matches only", file=sys.stderr)
+    print(f"memory: embedding host {base} (from {source}) does not answer; results are substring matches only. Run `memory setup` to choose a host.", file=sys.stderr)
     return False
 
 
@@ -696,6 +732,42 @@ def cmd_init(args: argparse.Namespace) -> None:
     print("initialized: " + ", ".join(made) if made else "already initialized; nothing changed")
 
 
+# --- setup ------------------------------------------------------------------
+
+
+def cmd_setup(args: argparse.Namespace) -> None:
+    """Choose where embeddings come from: ollama on this machine, or a remote host."""
+    pin = read_pin()
+    if args.local and args.host:
+        die("choose --local or --host URL, not both")
+    if args.host:
+        host = normalize_host(args.host)
+    elif args.local:
+        host = normalize_host(DEFAULT_HOST)
+    elif sys.stdin.isatty():
+        print("Where should embeddings come from?")
+        print(f"  1. ollama on this machine ({normalize_host(DEFAULT_HOST)})")
+        print("  2. a remote ollama host")
+        choice = input("1 or 2: ").strip()
+        if choice == "2":
+            host = normalize_host(input("host, like http://frame:11434: ").strip())
+        else:
+            host = normalize_host(DEFAULT_HOST)
+    else:
+        die("not a terminal; pass --local or --host URL")
+    path = write_config_file({"embedding_host": host})
+    print(f"embedding host {host} written to {path}")
+    if os.environ.get("OLLAMA_HOST"):
+        print(f"note: OLLAMA_HOST is exported in this shell and wins over the setup file")
+    if not host_answers(host):
+        print(f"{host} does not answer yet. " + ("Run `memory doctor --fix` to install ollama here." if host == normalize_host(DEFAULT_HOST) else "Start ollama there, then run `memory doctor`."))
+        return
+    if model_present(host, pin["model"]):
+        print(f"{pin['model']} is present. Run `memory doctor` to confirm everything.")
+    else:
+        print(f"{pin['model']} is not on {host}. Pull it there: OLLAMA_HOST={host} ollama pull {pin['model']}")
+
+
 # --- doctor -----------------------------------------------------------------
 
 INDEX_TEMPLATE = """---
@@ -753,9 +825,10 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         pinned = install_tool(pin) and pin_matches(pin, installed_rev())
     report(f"memoryfield-tool at {pin['tool_rev'][:7]}", pinned, "memory doctor --fix")
 
-    base = normalize_host(os.environ.get("OLLAMA_HOST"))
+    base, source = embedding_host()
     up = host_answers(base)
-    if not up and args.fix and platform.system() == "Darwin" and shutil.which("brew"):
+    local = any(h in base for h in ("127.0.0.1", "localhost", "[::1]"))
+    if not up and args.fix and local and platform.system() == "Darwin" and shutil.which("brew"):
         if shutil.which("ollama") is None:
             subprocess.run(["brew", "install", "ollama"])
         subprocess.run(["brew", "services", "start", "ollama"])
@@ -765,14 +838,17 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 break
             import time
             time.sleep(1)
-    fix = "brew install ollama && brew services start ollama" if platform.system() == "Darwin" else "curl -fsSL https://ollama.com/install.sh | sh"
-    report(f"ollama answers at {base}", up, fix)
+    if local:
+        fix = "brew install ollama && brew services start ollama" if platform.system() == "Darwin" else "curl -fsSL https://ollama.com/install.sh | sh"
+    else:
+        fix = f"start ollama on that host, or run `memory setup` to choose another"
+    report(f"embedding host {base} answers (from {source})", up, fix)
 
     has_model = up and model_present(base, pin["model"])
-    if up and not has_model and args.fix:
+    if up and not has_model and args.fix and shutil.which("ollama"):
         env = dict(os.environ, OLLAMA_HOST=base)
         has_model = subprocess.run(["ollama", "pull", pin["model"]], env=env).returncode == 0
-    report(f"model {pin['model']} pulled", has_model, f"OLLAMA_HOST={base} ollama pull {pin['model']}")
+    report(f"model {pin['model']} present on {base}", has_model, f"OLLAMA_HOST={base} ollama pull {pin['model']}")
 
     report(f"field at {FIELD_DIR}", FIELD_DIR.is_dir(), "memory init")
 
@@ -842,12 +918,16 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--brief", action="store_true", help="one line, no host probe; nothing if no field")
     p.set_defaults(func=cmd_doctor)
 
+    p = sub.add_parser("setup", help="choose the embedding host: --local, --host URL, or answer a prompt")
+    p.add_argument("--local", action="store_true"); p.add_argument("--host")
+    p.set_defaults(func=cmd_setup)
+
     p = sub.add_parser("init", help="create .memory/ and the CLAUDE.md paragraph")
     p.set_defaults(func=cmd_init)
 
     args = parser.parse_args(argv)
     set_root(project_root())
-    if args.command not in ("doctor", "init"):
+    if args.command not in ("doctor", "init", "setup"):
         check_format()
     args.func(args)
 

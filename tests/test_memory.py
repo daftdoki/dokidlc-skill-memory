@@ -279,3 +279,27 @@ def test_doctor_brief(tmp_path, monkeypatch, capsys):
     memory.main(["init"]); capsys.readouterr()
     memory.main(["doctor", "--brief"])
     assert "memory: ok, 0 pages" in capsys.readouterr().out
+
+
+def test_embedding_host_resolution_order(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    assert memory.embedding_host() == ("http://127.0.0.1:11434", "default")
+    memory.write_config_file({"embedding_host": "http://frame:11434"})
+    assert memory.embedding_host() == ("http://frame:11434", "memory setup")
+    monkeypatch.setenv("OLLAMA_HOST", "other:1")
+    assert memory.embedding_host() == ("http://other:1", "OLLAMA_HOST")
+
+
+def test_setup_writes_config(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    monkeypatch.setattr(memory, "host_answers", lambda base, timeout=2.0: False)
+    memory.main(["setup", "--host", "frame:11434"])
+    assert (tmp_path / "dokidlc-memory" / "config.toml").read_text() == 'embedding_host = "http://frame:11434"\n'
+    assert "does not answer yet" in capsys.readouterr().out
+    memory.main(["setup", "--local"])
+    assert memory.read_config()["embedding_host"] == "http://127.0.0.1:11434"
+    with pytest.raises(SystemExit):
+        memory.main(["setup", "--local", "--host", "x"])

@@ -29,6 +29,14 @@ Outside a session:
 CLAUDE_PROJECT_DIR=/path/to/repo OLLAMA_HOST=127.0.0.1:11434 bin/memory search "query"
 ```
 
+## Embedding host
+
+Resolved in this order: `OLLAMA_HOST` in the environment, then
+`embedding_host` in `~/.config/dokidlc-memory/config.toml` (written by
+`memory setup`; `XDG_CONFIG_HOME` is honoured), then `127.0.0.1:11434`.
+`doctor` names the source. `doctor --fix` installs ollama only for a local
+host.
+
 ## Tests
 
 ```

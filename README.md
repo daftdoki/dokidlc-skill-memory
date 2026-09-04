@@ -108,8 +108,9 @@ generated topic list.
 
 - Claude Code 2.1.195 or later
 - `uv` on PATH (https://docs.astral.sh/uv/)
-- [ollama](https://ollama.com) with the `nomic-embed-text` model, for
-  semantic search. Without it, search falls back to substring matching.
+- [ollama](https://ollama.com) with the `nomic-embed-text` model, either
+  on this machine or on a host you can reach. Without it, search falls
+  back to substring matching.
 - A git repository
 
 ## Installation
@@ -121,12 +122,26 @@ From the `dokidlc` marketplace, once per machine:
 claude plugin install memory@dokidlc
 ```
 
+Then, once per machine, choose where embeddings come from:
+
+```
+memory setup           asks: ollama on this machine, or a remote host
+memory setup --local   or answer without the prompt
+memory setup --host http://frame:11434
+memory doctor --fix    installs memoryfield-tool at the pinned commit; for a
+                       local host on macOS also ollama and the model, on Linux
+                       prints the command; for a remote host checks it answers
+```
+
+The choice is saved in `~/.config/dokidlc-memory/config.toml`. An
+`OLLAMA_HOST` exported in the shell overrides it. A laptop that sleeps can
+point at an always-on host so embeddings work from anywhere on the network;
+the pages themselves never leave the repository.
+
 Then in each repository:
 
 ```
 memory init            creates .memory/ and a short paragraph in CLAUDE.md
-memory doctor --fix    installs memoryfield-tool at the pinned commit; on macOS
-                       also ollama and the model, on Linux prints the command
 ```
 
 Commit `.memory/`. The vector index lives in the machine's cache and is

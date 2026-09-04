@@ -18,6 +18,7 @@ memory read PAGE.md                       one page
 memory doubt                              pages with evidence they may be wrong
 memory verify PAGE.md                     you re-confirmed it; record that and refresh its refs
 memory delete PAGE.md
+memory setup [--local|--host URL]         choose the embedding host, once per machine
 memory doctor --fix                       install or repair prerequisites
 memory init                               create .memory/ and the CLAUDE.md paragraph
 ```
@@ -37,6 +38,13 @@ printf 'What is true.\n\n## Sources\n\n- where you saw it, and when\n' | memory 
 
 `--title`, `--summary`, `--topics`, and `--kind` are required. `--ref` and
 `--check` are optional. The same command replaces an existing page.
+
+## Setup
+
+When `doctor` reports the embedding host does not answer, ask the creator
+whether embeddings should come from ollama on this machine or from a
+remote host, then run `memory setup --local` or `memory setup --host URL`
+with their answer. Never guess a host.
 
 ## When to search
 
