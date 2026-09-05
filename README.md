@@ -106,15 +106,21 @@ goes silent, because the client has no timeout.
 | `title` | What the page is about. |
 | `summary` | One sentence. Search shows this line. |
 | `topics` | One or two tags. They make the topic list in `index.md`. |
-| `kind` | `environment`, `procedure`, `finding`, or `decision`. Sets when an old page gets a "glance" hint: 30, 90, 180 days, or never. |
+| `kind` | `environment`, `procedure`, `finding`, or `decision`. Says how fast the page can go stale. |
 | `refs` | Files this page cites, each at a commit. If the file changes, the page becomes suspect. |
 | `check` | A read-only command. If it fails, the page becomes suspect. |
 | `verified` | When the agent last confirmed the page is still true. |
 
 Every page ends with a Sources section. It says where the fact came from,
-so a later session can check it. A glance hint means "skim if this
-matters to you". Only a changed ref, a failed check, or a contradiction
-makes a page suspect. `index.md` is the one page the agent does not
+so a later session can check it.
+
+The kind sets an age. An `environment` page is old after 30 days, a
+`procedure` after 90, a `finding` after 180. A `decision` never gets
+old. When a page is older than that and nobody has confirmed it, search
+adds a "glance" note next to it. The note means "this might be out of
+date, look before you rely on it". The note is only a nudge. A page
+becomes suspect only when a file it cites changed, its check command
+failed, or the agent found it to be wrong. `index.md` is the one page the agent does not
 write: its top half is yours, its bottom half is a generated topic list.
 
 ## How search works
