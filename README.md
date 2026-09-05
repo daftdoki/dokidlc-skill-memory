@@ -17,7 +17,7 @@ that search marks as suspect. Nothing in memory needs your approval, and
 nothing the creator asked for goes there. Memory is what the agent learned
 by itself; documents you review stay in `docs/`.
 
-## Why this, when Claude Code has a memory
+## Why another memory bank?
 
 Claude Code's own memory lives in a directory under your home, outside the
 repository. It is per machine and per user, git never carries it, and it
