@@ -306,14 +306,39 @@ def test_git_checks_and_init_staging(tmp_path, monkeypatch):
     assert all(ok for ok, _, _ in memory.git_checks())
 
 
-def test_embedding_host_resolution_order(tmp_path, monkeypatch):
+def test_host_candidates_order(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
-    assert memory.embedding_host() == ("http://127.0.0.1:11434", "default")
+    assert memory.host_candidates() == [("http://127.0.0.1:11434", "default")]
     memory.write_config_file({"embedding_host": "http://frame:11434"})
-    assert memory.embedding_host() == ("http://frame:11434", "memory setup")
+    assert memory.host_candidates() == [("http://frame:11434", "memory setup"), ("http://127.0.0.1:11434", "default")]
     monkeypatch.setenv("OLLAMA_HOST", "other:1")
-    assert memory.embedding_host() == ("http://other:1", "OLLAMA_HOST")
+    assert [c[1] for c in memory.host_candidates()] == ["OLLAMA_HOST", "memory setup", "default"]
+
+
+def test_resolve_host_skips_a_dead_env_host(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("OLLAMA_HOST", "http://dead:11434")
+    memory.write_config_file({"embedding_host": "http://frame:11434"})
+    monkeypatch.setattr(memory, "host_answers", lambda url, timeout=2.0: url == "http://frame:11434")
+    memory._RESOLVED = None
+    assert memory.resolve_host() == ("http://frame:11434", "memory setup", True)
+    memory._RESOLVED = None
+    monkeypatch.setattr(memory, "host_answers", lambda url, timeout=2.0: False)
+    assert memory.resolve_host() == ("http://dead:11434", "OLLAMA_HOST", False)
+    memory._RESOLVED = None
+
+
+def test_search_json_never_calls_the_tool_on_a_dead_host(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    monkeypatch.setattr(memory, "host_answers", lambda url, timeout=2.0: False)
+    memory._RESOLVED = None
+    called = []
+    monkeypatch.setattr(memory, "tool", lambda *a, **k: called.append(a))
+    assert memory.search_json("anything") == []
+    assert called == []
+    memory._RESOLVED = None
 
 
 def test_setup_writes_config(tmp_path, monkeypatch, capsys):

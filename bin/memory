@@ -127,15 +127,45 @@ def semantic_enabled() -> bool:
 NO_EMBEDDING_HOST = "http://127.0.0.1:9"
 
 
-def embedding_host() -> tuple[str, str]:
-    """(base url, where it came from): OLLAMA_HOST, then memory setup, then the local default."""
+def host_candidates() -> list[tuple[str, str]]:
+    """(base url, source) in order of preference: OLLAMA_HOST, then memory setup, then the local default."""
+    out: list[tuple[str, str]] = []
     env = os.environ.get("OLLAMA_HOST")
     if env:
-        return normalize_host(env), "OLLAMA_HOST"
+        out.append((normalize_host(env), "OLLAMA_HOST"))
     cfg = read_config().get("embedding_host")
     if cfg:
-        return normalize_host(str(cfg)), "memory setup"
-    return normalize_host(None), "default"
+        out.append((normalize_host(str(cfg)), "memory setup"))
+    out.append((normalize_host(None), "default"))
+    seen: set[str] = set()
+    return [c for c in out if not (c[0] in seen or seen.add(c[0]))]
+
+
+_RESOLVED: tuple[str, str, bool] | None = None
+
+
+def resolve_host() -> tuple[str, str, bool]:
+    """The first candidate that answers, probed once per process: (url, source, answers).
+
+    A stale OLLAMA_HOST in a long-lived shell must not beat a setup file that
+    names a host that works. If nothing answers, the first candidate is
+    returned with answers=False so messages can name it.
+    """
+    global _RESOLVED
+    if _RESOLVED is None:
+        cands = host_candidates()
+        _RESOLVED = (cands[0][0], cands[0][1], False)
+        for url, source in cands:
+            if host_answers(url):
+                _RESOLVED = (url, source, True)
+                break
+    return _RESOLVED
+
+
+def embedding_host() -> tuple[str, str]:
+    """(base url, where it came from). The first configured host that answers."""
+    url, source, _ = resolve_host()
+    return url, source
 HOST_TIMEOUT = 2.0
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -301,10 +331,11 @@ def require_host(env: dict[str, str]) -> bool:
     """True when embeddings will work. Prints one line and returns False otherwise."""
     if not semantic_enabled():
         return False
-    base, source = embedding_host()
-    if host_answers(base):
+    base, source, answers = resolve_host()
+    if answers:
         return True
-    print(f"memory: embedding host {base} (from {source}) does not answer; results are string matches only. Run `memory setup` to choose a host, or `memory setup --substring` if ollama cannot run here.", file=sys.stderr)
+    tried = ", ".join(f"{u} ({src})" for u, src in host_candidates())
+    print(f"memory: no embedding host answers (tried {tried}); results are string matches only. Run `memory setup` to choose a host, or `memory setup --substring` if ollama cannot run here.", file=sys.stderr)
     return False
 
 
@@ -333,8 +364,10 @@ def distance_text(r: dict) -> str:
 
 
 def search_json(query: str) -> list[dict]:
+    """Semantic results from the tool, or nothing when no embedding host answers. Never calls the tool against a dead host."""
     env = tool_env()
-    require_host(env)
+    if not require_host(env):
+        return []
     proc = tool("search", "--json", query, check=False)
     if proc.returncode not in (0, 1):
         die(proc.stderr.strip() or "search failed")
@@ -1035,8 +1068,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     if not semantic_enabled():
         report("search mode: string, the fallback (memory setup --local or --host URL switches to semantic)", True)
         up = False
-    base, source = embedding_host()
-    up = semantic_enabled() and host_answers(base)
+    base, source, answers = resolve_host()
+    up = semantic_enabled() and answers
     local = any(h in base for h in ("127.0.0.1", "localhost", "[::1]"))
     if not up and args.fix and local and platform.system() == "Darwin" and shutil.which("brew"):
         if shutil.which("ollama") is None:
