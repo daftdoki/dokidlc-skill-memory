@@ -353,13 +353,68 @@ def parse_results(stdout: str) -> list[dict]:
     return results if isinstance(results, list) else []
 
 
+STOPWORDS = set("the a an and or of to in on for with from by at is are was were be been it its this that these those how why what when where which who does do did can could should would will not no yes my our your their his her".split())
+TERM_RE = re.compile(r"[a-z0-9][a-z0-9._-]*[a-z0-9]|[a-z0-9]")
+
+
+def query_terms(query: str) -> list[str]:
+    """The tokens a matching page would have to contain: identifiers kept whole, and their parts."""
+    terms: list[str] = []
+    for tok in TERM_RE.findall(query.lower()):
+        for t in [tok] + (re.split(r"[._-]", tok) if any(c in tok for c in "._-") else []):
+            if len(t) >= 3 and t not in STOPWORDS and t not in terms:
+                terms.append(t)
+    return terms
+
+
+def string_search(terms: list[str]) -> list[dict]:
+    """Exact-text match over filename, title, and summary. Local, no embedding call."""
+    rows = []
+    for page in list_pages():
+        fm, body = parse_page(page.read_text())
+        head = f"{page.name} {fm.get('title', '')} {fm.get('summary', '')}".lower()
+        text = head + " " + body.lower()
+        hits = [t for t in terms if t in text]
+        if hits:
+            # a hit in the name, title, or summary counts more than one buried in the body
+            rows.append({"filename": page.name, "summary": fm.get("summary", ""), "distance": None, "matched": hits, "head_hits": sum(t in head for t in hits)})
+    return rows
+
+
+def hybrid_search(query: str) -> list[dict]:
+    """Semantic results for the whole query, plus string hits for its terms, fused.
+
+    Ranking: found by both paths first, then semantic by distance, then string-only
+    by how many terms matched. Each row says how it was found under 'via'.
+    """
+    semantic = search_json(query) if semantic_enabled() else []
+    strings = string_search(query_terms(query))
+    merged: dict[str, dict] = {}
+    for r in semantic:
+        merged[r["filename"]] = {**r, "via": ["semantic"], "hits": 0}
+    for r in strings:
+        row = merged.setdefault(r["filename"], {**r, "via": [], "hits": 0})
+        row["via"] = row["via"] + r["matched"]
+        row["hits"] = len(r["matched"]) + r.get("head_hits", 0)
+    rows = list(merged.values())
+
+    def key(r: dict):
+        both = "semantic" in r["via"] and r["hits"] > 0
+        d = r.get("distance") if isinstance(r.get("distance"), (int, float)) else 1.0
+        return (0 if both else 1 if "semantic" in r["via"] else 2, d, -r["hits"], r["filename"])
+
+    rows.sort(key=key)
+    return rows
+
+
 def merge_results(per_query: list[tuple[str, list[dict]]]) -> list[dict]:
     """Union results across queries, one row per page, best distance kept, matching terms listed."""
     merged: dict[str, dict] = {}
     for query, results in per_query:
         for r in results:
-            row = merged.setdefault(r["filename"], {**r, "matched": []})
+            row = merged.setdefault(r["filename"], {**r, "matched": [], "via": []})
             row["matched"].append(query)
+            row["via"] = row["via"] + [v for v in r.get("via", []) if v not in row["via"]]
             d_new, d_old = r.get("distance"), row.get("distance")
             if isinstance(d_new, (int, float)) and (not isinstance(d_old, (int, float)) or d_new < d_old):
                 row["distance"] = d_new
@@ -371,25 +426,26 @@ def merge_results(per_query: list[tuple[str, list[dict]]]) -> list[dict]:
 def cmd_search(args: argparse.Namespace) -> None:
     require_field()
     queries = args.query
-    results = merge_results([(q, search_json(q)) for q in queries]) if len(queries) > 1 else search_json(queries[0])
+    results = merge_results([(q, hybrid_search(q)) for q in queries]) if len(queries) > 1 else hybrid_search(queries[0])
     if args.json:
         for r in results:
+            r.pop("hits", None); r.pop("head_hits", None); r.pop("matched", None)
             r["signals"] = [{"signal": sig, "reason": reason} for sig, reason in suspicion(page_frontmatter(r["filename"]))]
         print(json.dumps(results, indent=2))
         return
     if not results:
-        print("no matching pages" + ("" if semantic_enabled() else " (string search matches exact text only; `memory setup --local` or `--host URL` switches to semantic search)"))
+        print("no matching pages" + ("" if semantic_enabled() else " (string search only; try the terms a page would contain, or `memory setup --local` or `--host URL` for semantic search)"))
         return
     for r in results:
         # refs and age only: a git lookup and a date compare. Checks run in doubt.
         signals = suspicion(page_frontmatter(r["filename"]))
-        via = f" [{', '.join(r['matched'])}]" if len(queries) > 1 and r.get("matched") else ""
-        print(f"{r['filename']}: {r.get('summary', '')} ({distance_text(r)}){via}{marker(signals)}")
+        via = ", ".join(r.get("via") or [])
+        print(f"{r['filename']}: {r.get('summary', '')} ({distance_text(r)}; via {via}){marker(signals)}")
 
 
 def cmd_pull(args: argparse.Namespace) -> None:
     require_field()
-    results = search_json(args.query)
+    results = hybrid_search(args.query)
     if not results:
         print("no matching pages")
         return
@@ -721,8 +777,8 @@ def cmd_cost(args: argparse.Namespace) -> None:
     rows = []
     n = len(index_md.read_bytes()) if index_md.is_file() else 0
     rows.append(("index.md", n))
-    results = search_json(args.query)[:5]
-    line = "\n".join(f"{r['filename']}: {r.get('summary','')} ({distance_text(r)})" for r in results)
+    results = hybrid_search(args.query)[:5]
+    line = "\n".join(f"{r['filename']}: {r.get('summary','')} ({distance_text(r)}; via {', '.join(r.get('via') or [])})" for r in results)
     rows.append((f"search '{args.query}', {len(results)} results", len(line.encode())))
     pages = sorted(FIELD_DIR.glob("*.md"))
     rows.append((f"all {len(pages)} pages", sum(len(p.read_bytes()) for p in pages)))

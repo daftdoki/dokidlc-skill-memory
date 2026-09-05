@@ -29,6 +29,14 @@ Outside a session:
 CLAUDE_PROJECT_DIR=/path/to/repo OLLAMA_HOST=127.0.0.1:11434 bin/memory search "query"
 ```
 
+## Search
+
+`hybrid_search()` fuses `search_json()` (the tool's semantic search) with
+`string_search()` (a local exact-text loop over name, title, summary, and
+body). Ranking: both paths, then semantic by distance, then string-only
+by term count with title hits ahead of body hits. In string mode only the
+local loop runs and the tool is never called for search.
+
 ## Search mode and embedding host
 
 Semantic search is on unless `semantic = false` in the setup file.

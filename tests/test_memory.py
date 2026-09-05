@@ -359,3 +359,33 @@ def test_parse_results_skips_the_fallback_notice():
     assert memory.parse_results(noisy) == [{"filename": "a.md", "summary": "A", "distance": None}]
     assert memory.parse_results("") == []
     assert memory.parse_results("garbage") == []
+
+
+def test_query_terms_keeps_identifiers_and_parts():
+    assert memory.query_terms("Why does install fail on a mac with pysqlite3-binary?") == ["install", "fail", "mac", "pysqlite3-binary", "pysqlite3", "binary"]
+    assert memory.query_terms("the of and") == []
+
+
+def test_string_search_and_hybrid_ranking(tmp_path, monkeypatch):
+    field = tmp_path / ".memory"; field.mkdir()
+    (field / "index.md").write_text("intro\n")
+    (field / "pysqlite3-install-override.md").write_text("---\ntitle: pysqlite3-binary blocks install\nsummary: the uv override\n---\nx\n")
+    (field / "ollama-host-silent-hang.md").write_text("---\ntitle: A silent OLLAMA_HOST hangs the tool\nsummary: probe first\n---\nx\n")
+    (field / "unrelated.md").write_text("---\ntitle: Something else\nsummary: nothing here\n---\nx\n")
+    memory.set_root(tmp_path)
+    hits = memory.string_search(["install", "pysqlite3", "hang"])
+    assert {r["filename"]: r["matched"] for r in hits} == {"pysqlite3-install-override.md": ["install", "pysqlite3"], "ollama-host-silent-hang.md": ["hang"]}
+    (field / "body-only.md").write_text("---\ntitle: Elsewhere\nsummary: nothing\n---\nthe incident was filed as I113.\n")
+    body = memory.string_search(["i113"])
+    assert [r["filename"] for r in body] == ["body-only.md"] and body[0]["head_hits"] == 0
+    monkeypatch.setattr(memory, "semantic_enabled", lambda: True)
+    monkeypatch.setattr(memory, "search_json", lambda q: [
+        {"filename": "unrelated.md", "summary": "nothing here", "distance": 0.30},
+        {"filename": "pysqlite3-install-override.md", "summary": "the uv override", "distance": 0.40},
+    ])
+    rows = memory.hybrid_search("why does install fail with pysqlite3")
+    assert [r["filename"] for r in rows] == ["pysqlite3-install-override.md", "unrelated.md"]   # found by both beats a closer semantic-only hit
+    assert rows[0]["via"] == ["semantic", "install", "pysqlite3"]
+    monkeypatch.setattr(memory, "semantic_enabled", lambda: False)
+    rows = memory.hybrid_search("hang")
+    assert [r["filename"] for r in rows] == ["ollama-host-silent-hang.md"] and rows[0]["via"] == ["hang"]
