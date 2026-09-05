@@ -61,6 +61,8 @@ steer it:
 - "That page about the tailnet host is wrong now, the host is gone." The
   agent rewrites or deletes it.
 - "How much context does memory cost?" `memory cost`.
+- "Set up memory" or "switch memory to meaning search." The agent asks
+  its questions and runs `memory setup`, `init`, and `doctor --fix`.
 
 The commands, for reference:
 
@@ -114,36 +116,25 @@ generated topic list.
 
 ## Installation
 
-From the `dokidlc` marketplace, once per machine:
+One command per machine, in Claude Code:
 
 ```
 /plugin marketplace add daftdoki/dokidlc-plugins
 claude plugin install memory@dokidlc
 ```
 
-Then, once per machine, choose how search works:
+Then start a session in a repository and say "set up memory." The agent
+asks whether you want word search or meaning search, and for meaning
+search whether the embedding model runs on this machine or on a remote
+host. It then runs the setup, creates `.memory/` with a short paragraph in
+`CLAUDE.md`, and installs what is missing: memoryfield-tool at the pinned
+commit, and for a local model on macOS, ollama and the model itself. On
+Linux it tells you the one ollama command to run. Commit `.memory/`.
 
-```
-memory setup                       asks: substring or semantic, and for semantic, which host
-memory setup --substring           the default; needs nothing
-memory setup --local               semantic, embeddings from ollama on this machine
-memory setup --host http://frame:11434   semantic, embeddings from a remote ollama
-memory doctor --fix                installs memoryfield-tool at the pinned commit; for a
-                                   local semantic host on macOS also ollama and the model
-```
-
-The choice is saved in `~/.config/dokidlc-memory/config.toml`. An
-`OLLAMA_HOST` exported in the shell turns semantic search on and overrides
-the host. See "Two ways to search" below.
-
-Then in each repository:
-
-```
-memory init            creates .memory/ and a short paragraph in CLAUDE.md
-```
-
-Commit `.memory/`. The vector index lives in the machine's cache and is
-rebuilt from the pages, so git carries only markdown.
+Your choices are saved in `~/.config/dokidlc-memory/config.toml`. To
+change them later, say so; the agent runs `memory setup` again with your
+answer. An `OLLAMA_HOST` exported in the shell turns meaning search on and
+overrides the host.
 
 To have a repository declare the plugin for everyone who clones it, add to
 `.claude/settings.json`:

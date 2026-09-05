@@ -824,7 +824,11 @@ def install_tool(pin: dict[str, str]) -> bool:
 def cmd_doctor(args: argparse.Namespace) -> None:
     pin = read_pin()
     if args.brief:
+        if not config_file().is_file():
+            print("memory: not set up on this machine. Ask the creator whether they want substring or semantic search and, for semantic, whether embeddings come from ollama here or on a remote host; then run `memory setup` with their answer, `memory init` if this repository has no .memory/, and `memory doctor --fix`.")
+            return
         if not FIELD_DIR.is_dir():
+            print("memory: this repository has no .memory/. Ask the creator whether to create one; if yes, run `memory init`.")
             return
         found = read_format()
         if found is not None and found > FORMAT:
