@@ -139,7 +139,8 @@ page that both searches found is the page to trust.
 ### Without ollama
 
 Some machines cannot run or reach ollama. On such a
-machine, run `memory setup --substring`. Then only string search runs.
+machine, tell the agent to use string search. Then only string search
+runs.
 The agent searches for the words a page contains, not for the question.
 It tells you when it finds nothing. Memory works, but not as well.
 
