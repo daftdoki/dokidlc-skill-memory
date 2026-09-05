@@ -744,7 +744,11 @@ def cmd_init(args: argparse.Namespace) -> None:
     if CLAUDE_MD_MARK not in text:
         claude_md.write_text(text.rstrip("\n") + "\n" + CLAUDE_MD_PARAGRAPH if text else CLAUDE_MD_PARAGRAPH.lstrip("\n"))
         made.append("CLAUDE.md paragraph")
+    git_add([".memory", "CLAUDE.md"])
     print("initialized: " + ", ".join(made) if made else "already initialized; nothing changed")
+    for ok, label, fix in git_checks():
+        if not ok:
+            print(f"memory: {label} ({fix})")
 
 
 # --- setup ------------------------------------------------------------------
@@ -794,6 +798,45 @@ def cmd_setup(args: argparse.Namespace) -> None:
         print(f"{pin['model']} is not on {host}. Pull it there: OLLAMA_HOST={host} ollama pull {pin['model']}")
 
 
+# --- git ---------------------------------------------------------------------
+
+PERSISTED = (".memory", ".claude/settings.json", "CLAUDE.md")
+
+
+def git_status_of(path: str) -> str:
+    """'tracked', 'untracked', 'ignored', 'missing', or 'no-git'."""
+    try:
+        subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-inside-work-tree"], capture_output=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "no-git"
+    if not (ROOT / path).exists():
+        return "missing"
+    if subprocess.run(["git", "-C", str(ROOT), "check-ignore", "-q", path], capture_output=True).returncode == 0:
+        return "ignored"
+    tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", "--error-unmatch", path], capture_output=True).returncode == 0
+    return "tracked" if tracked else "untracked"
+
+
+def git_checks() -> list[tuple[bool, str, str]]:
+    """Rows for doctor: what must be in the repository so memory and settings persist."""
+    rows = []
+    for path in PERSISTED:
+        state = git_status_of(path)
+        if state == "no-git":
+            return [(False, "this directory is a git repository", "git init, then commit .memory/ and .claude/settings.json")]
+        label = {"tracked": f"{path} is committed", "untracked": f"{path} is not committed", "ignored": f"{path} is ignored by git", "missing": f"{path} does not exist"}[state]
+        fix = {"tracked": "", "untracked": f"git add {path} && git commit", "ignored": f"remove {path} from .gitignore, then git add it", "missing": "memory init" if path != ".claude/settings.json" else "enable the plugin in project settings so clones get it"}[state]
+        rows.append((state == "tracked", label, fix))
+    return rows
+
+
+def git_add(paths: list[str]) -> None:
+    try:
+        subprocess.run(["git", "-C", str(ROOT), "add", "--", *[p for p in paths if (ROOT / p).exists()]], capture_output=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+
 # --- doctor -----------------------------------------------------------------
 
 INDEX_TEMPLATE = """---
@@ -835,7 +878,9 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             print(f"memory: .memory was written by a newer memory plugin (format {found}); update the plugin")
             return
         n = len(list_pages())
-        print(f"memory: ok, {n} page{'' if n == 1 else 's'}. Search before you investigate: `memory search QUERY`.")
+        missing = [label for ok, label, _ in git_checks() if not ok]
+        tail = f" Persistence: {'; '.join(missing)}." if missing else ""
+        print(f"memory: ok, {n} page{'' if n == 1 else 's'}. Search before you investigate: `memory search QUERY`.{tail}")
         return
     ok = True
 
@@ -889,6 +934,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
     claude_md = ROOT / "CLAUDE.md"
     report("CLAUDE.md has the memory paragraph", claude_md.is_file() and CLAUDE_MD_MARK in claude_md.read_text(), "memory init")
+    for good, label, fix in git_checks():
+        report(label, good, fix)
     if FIELD_DIR.is_dir() and pinned:
         write_config()
         proc = tool("validate", check=False)

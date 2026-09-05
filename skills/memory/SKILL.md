@@ -62,8 +62,12 @@ memory init                         if the creator said yes to a field
 memory doctor --fix                 installs the tool; for a local host on macOS also ollama and the model
 ```
 
-Report what `doctor` says. If it names something only the creator can do,
-such as installing ollama on a remote host, say exactly that and stop.
+Report what `doctor` says. It also checks that `.memory/`,
+`.claude/settings.json`, and `CLAUDE.md` are tracked by git and not
+ignored, because memory only persists if they are committed. `init` stages
+what it creates; tell the creator what is left to commit. If `doctor` names
+something only the creator can do, such as installing ollama on a remote
+host, say exactly that and stop.
 Never guess a host, and never run `setup` again without asking, because
 it overwrites their choice.
 

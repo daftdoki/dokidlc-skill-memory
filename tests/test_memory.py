@@ -271,14 +271,39 @@ def test_init_appends_paragraph_once(tmp_path, monkeypatch, capsys):
     assert "nothing changed" in capsys.readouterr().out
 
 
-def test_doctor_brief(tmp_path, monkeypatch, capsys):
+def test_doctor_brief_guides_setup(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
     memory.main(["doctor", "--brief"])
-    assert capsys.readouterr().out == ""
+    assert "not set up on this machine" in capsys.readouterr().out
+    memory.main(["setup", "--substring"]); capsys.readouterr()
+    memory.main(["doctor", "--brief"])
+    assert "no .memory/" in capsys.readouterr().out
     monkeypatch.setattr(memory.shutil, "which", lambda name: None)
     memory.main(["init"]); capsys.readouterr()
     memory.main(["doctor", "--brief"])
-    assert "memory: ok, 0 pages" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "memory: ok, 0 pages" in out and "Persistence:" in out   # no git repo yet
+
+
+def test_git_checks_and_init_staging(tmp_path, monkeypatch):
+    import subprocess
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setattr(memory.shutil, "which", lambda name: None)
+    memory.set_root(tmp_path)
+    assert memory.git_checks()[0][1] == "this directory is a git repository"
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text(".memory/\n")
+    memory.main(["init"])
+    states = {label: ok for ok, label, _ in memory.git_checks()}
+    assert states[".memory is ignored by git"] is False
+    assert states[".claude/settings.json does not exist"] is False
+    (tmp_path / ".gitignore").write_text("")
+    (tmp_path / ".claude").mkdir(); (tmp_path / ".claude" / "settings.json").write_text("{}")
+    memory.git_add([".memory", "CLAUDE.md", ".claude/settings.json"])
+    subprocess.run(["git", "-C", str(tmp_path), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"], check=True)
+    assert all(ok for ok, _, _ in memory.git_checks())
 
 
 def test_embedding_host_resolution_order(tmp_path, monkeypatch):

@@ -129,7 +129,10 @@ search whether the embedding model runs on this machine or on a remote
 host. It then runs the setup, creates `.memory/` with a short paragraph in
 `CLAUDE.md`, and installs what is missing: memoryfield-tool at the pinned
 commit, and for a local model on macOS, ollama and the model itself. On
-Linux it tells you the one ollama command to run. Commit `.memory/`.
+Linux it tells you the one ollama command to run. It stages `.memory/` and
+the `CLAUDE.md` paragraph and checks that they, and
+`.claude/settings.json`, are tracked and not ignored, since memory only
+persists if they are committed. You commit.
 
 Your choices are saved in `~/.config/dokidlc-memory/config.toml`. To
 change them later, say so; the agent runs `memory setup` again with your
