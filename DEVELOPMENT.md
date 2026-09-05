@@ -89,6 +89,15 @@ minutes so a dead host costs one probe, not one per prompt.
 
 ## Approved checks
 
-`write` and `verify` record the sha256 of a page's check in
+`write` and `approve` record the sha256 of a page's check in
 `~/.local/state/dokidlc-memory/checks.json`. `doubt` runs only approved
-checks and lists the rest. `memory approve PAGE` runs one and records it.
+checks and lists the rest; `verify` refuses a page whose check is not
+approved or not read-only in form. Only `approve` and `write` grant
+approval, because those are the two places the creator was asked or the
+command came from this machine's own agent. The PreToolUse guard asks for
+`memory approve` and `memory doubt --network`, and the wrapper refuses
+`--network` off a terminal unless `MEMORY_ALLOW_NETWORK=1` is set.
+
+The wrapper never writes through a symlink: `regenerate_index` and `init`
+refuse one, so a cloned repository cannot point `.memory/index.md` or
+`CLAUDE.md` at another file.

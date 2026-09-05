@@ -96,7 +96,7 @@ page's check command.
 | A shell command fails | The same line, searched with the error text. Silent when the error says nothing but an exit code. |
 | A shell command works after failing twice | A reminder to write the fix as a procedure page, once per command. |
 | The agent is about to stop | Once per session, only when a command failed twice then worked and nothing was written: write it, or say there is nothing worth a page. |
-| The agent runs `memory doubt --network` | Claude Code asks you to approve it. |
+| The agent runs `memory doubt --network` or `memory approve` | Claude Code asks you to approve it. |
 
 ## Sources
 

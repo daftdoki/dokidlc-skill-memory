@@ -40,6 +40,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import urllib.error
 import urllib.request
@@ -100,14 +101,20 @@ def config_file() -> Path:
     return base / "dokidlc-memory" / "config.toml"
 
 
+_CONFIG: tuple[Path, dict] | None = None
+
+
 def read_config() -> dict:
+    """The setup file, parsed once per process per path. write_config_file resets the cache."""
+    global _CONFIG
     path = config_file()
-    if not path.is_file():
-        return {}
-    try:
-        return tomllib.loads(path.read_text())
-    except tomllib.TOMLDecodeError:
-        return {}
+    if _CONFIG is None or _CONFIG[0] != path:
+        try:
+            data = tomllib.loads(path.read_text()) if path.is_file() else {}
+        except (tomllib.TOMLDecodeError, OSError):
+            data = {}
+        _CONFIG = (path, data)
+    return _CONFIG[1]
 
 
 def write_config_file(values: dict) -> Path:
@@ -115,6 +122,8 @@ def write_config_file(values: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f'{k} = "{v}"' if isinstance(v, str) else f"{k} = {str(v).lower()}" for k, v in values.items()]
     path.write_text("\n".join(lines) + "\n")
+    global _CONFIG
+    _CONFIG = None
     return path
 
 
@@ -241,6 +250,23 @@ def state_dir() -> Path:
     return base / "dokidlc-memory"
 
 
+def read_state_json(name: str) -> dict:
+    path = state_dir() / name
+    try:
+        data = json.loads(path.read_text()) if path.is_file() else {}
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_state_json(name: str, data: dict) -> None:
+    try:
+        state_dir().mkdir(parents=True, exist_ok=True)
+        (state_dir() / name).write_text(json.dumps(data))
+    except OSError:
+        pass
+
+
 def session_id() -> str:
     return os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID") or "no-session"
 
@@ -292,27 +318,22 @@ def normalize_host(raw: str | None) -> str:
     return value
 
 
-PROBE_TTL = 600
+PROBE_TTL_DEAD = 600     # a dead host is not re-probed on every prompt
+PROBE_TTL_ALIVE = 60     # a live host is re-checked often enough to notice it went down
 
 
-def host_answers(base_url: str, timeout: float = HOST_TIMEOUT) -> bool:
-    """One GET with a short timeout, cached per host for PROBE_TTL seconds. A silent host returns False, never hangs."""
-    cache = state_dir() / "hosts.json"
+def host_answers(base_url: str, timeout: float = HOST_TIMEOUT, fresh: bool = False) -> bool:
+    """One GET with a short timeout, cached per host. A silent host returns False, never hangs. fresh=True skips the cache."""
+    data = read_state_json("hosts.json")
     now = datetime.now(UTC).timestamp()
-    try:
-        data = json.loads(cache.read_text()) if cache.is_file() else {}
-        hit = data.get(base_url)
-        if hit and now - float(hit.get("ts", 0)) < PROBE_TTL:
+    hit = data.get(base_url)
+    if hit and not fresh:
+        ttl = PROBE_TTL_ALIVE if hit.get("answers") else PROBE_TTL_DEAD
+        if now - float(hit.get("ts", 0)) < ttl:
             return bool(hit.get("answers"))
-    except (OSError, ValueError):
-        data = {}
     answers = _probe(base_url, timeout)
-    try:
-        state_dir().mkdir(parents=True, exist_ok=True)
-        data[base_url] = {"answers": answers, "ts": now}
-        cache.write_text(json.dumps(data))
-    except OSError:
-        pass
+    data[base_url] = {"answers": answers, "ts": now}
+    write_state_json("hosts.json", data)
     return answers
 
 
@@ -400,7 +421,7 @@ def tool(*args: str, stdin: str | None = None, root: Path | None = None, check: 
     )
 
 
-def require_host(env: dict[str, str]) -> bool:
+def require_host() -> bool:
     """True when embeddings will work. Prints one line and returns False otherwise."""
     if not semantic_enabled():
         return False
@@ -438,8 +459,7 @@ def distance_text(r: dict) -> str:
 
 def search_json(query: str) -> list[dict]:
     """Semantic results from the tool, or nothing when no embedding host answers. Never calls the tool against a dead host."""
-    env = tool_env()
-    if not require_host(env):
+    if not require_host():
         return []
     proc = tool("search", "--json", query, check=False)
     if proc.returncode not in (0, 1):
@@ -468,7 +488,9 @@ def query_terms(query: str) -> list[str]:
     terms: list[str] = []
     for tok in TERM_RE.findall(query.lower()):
         # an identifier with digits (an IP, a version, a commit) stays whole; hyphenated names also yield their parts
-        parts = [tok] + (re.split(r"[._-]", tok) if any(c in tok for c in "._-") and not any(ch.isdigit() for ch in tok) else [])
+        # split on hyphens and underscores; split on dots only when the token has no digits (an IP or version stays whole)
+        splitter = r"[_-]" if any(ch.isdigit() for ch in tok) else r"[._-]"
+        parts = [tok] + (re.split(splitter, tok) if re.search(splitter, tok) else [])
         for t in parts:
             if len(t) >= 3 and t not in STOPWORDS and t not in terms:
                 terms.append(t)
@@ -484,16 +506,19 @@ def string_search(terms: list[str]) -> list[dict]:
         fm, body = parse_page(page.read_text())
         head = f"{page.name} {fm.get('title', '')} {fm.get('summary', '')}".lower()
         texts.append((page, fm, head, head + " " + body.lower()))
-    # a term that appears in more than a third of pages says nothing about any one of them
+    per_page = [(page, fm, head, [t for t in terms if t in text]) for page, fm, head, text in texts]
     # a term in more than a third of pages, and in more than three, says nothing about any one of them
-    common = {t for t in terms if pages and sum(t in text for _, _, _, text in texts) > max(3, len(pages) / 3)}
-    for page, fm, head, text in texts:
-        hits = [t for t in terms if t in text]
+    counts: dict[str, int] = {}
+    for _, _, _, hits in per_page:
+        for t in hits:
+            counts[t] = counts.get(t, 0) + 1
+    common = {t for t, n in counts.items() if n > max(3, len(pages) / 3)}
+    for page, fm, head, hits in per_page:
         if hits:
             # a head term must match as a whole word, so "add" does not hit "adds" and "lets" does not hit "lets the tool run"
             head_terms = [t for t in hits if re.search(r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9])", head)]
-            rows.append({"filename": page.name, "summary": fm.get("summary", ""), "distance": None, "matched": hits,
-                         "head_hits": len(head_terms), "head_terms": head_terms, "rare_terms": [t for t in hits if t not in common]})
+            rows.append({"filename": page.name, "summary": fm.get("summary", ""), "distance": None, "matched": hits, "fm": fm,
+                         "head_terms": head_terms, "rare_terms": [t for t in hits if t not in common]})
     return rows
 
 
@@ -511,8 +536,10 @@ def hybrid_search(query: str) -> list[dict]:
     for r in strings:
         row = merged.setdefault(r["filename"], {**r, "via": [], "hits": 0})
         row["via"] = row["via"] + r["matched"]
-        row["hits"] = len(r["matched"]) + r.get("head_hits", 0)
-        row["head_terms"] = r.get("head_terms", []); row["rare_terms"] = r.get("rare_terms", [])
+        row["hits"] = len(r["matched"]) + len(r.get("head_terms", []))
+        row["head_terms"] = r.get("head_terms", [])
+        row["rare_terms"] = r.get("rare_terms", [])
+        row["fm"] = r.get("fm")
     rows = list(merged.values())
 
     def key(r: dict):
@@ -551,7 +578,7 @@ ANSWER_RE = re.compile(r"^(yes|yeah|no|nope|ok|okay|agreed?|go( ahead)?|sure|don
 def recall_worthy(prompt: str) -> bool:
     """Skip short answers, one-word replies, interview replies, and slash commands."""
     p = prompt.strip()
-    return len(p) >= RECALL_MIN_PROMPT and not re.match(r"^\d+\s*[>.)]", p) and not p.startswith("/") and not ANSWER_RE.match(p)
+    return len(p) >= RECALL_MIN_PROMPT and not re.match(r"^\d+\s*[>.)]", p) and not p.startswith("/") and not (len(p) < 80 and ANSWER_RE.match(p))
 
 
 def recall_filter(rows: list[dict]) -> list[dict]:
@@ -565,7 +592,7 @@ def recall_filter(rows: list[dict]) -> list[dict]:
     keep = []
     for r in rows:
         via = r.get("via") or []
-        sem = "semantic" in via
+        sem = "semantic" in via and isinstance(r.get("distance"), (int, float))   # the tool's own fallback rows carry no distance
         rare = r.get("rare_terms") or []
         head = r.get("head_terms") or []
         d = r.get("distance") if isinstance(r.get("distance"), (int, float)) else None
@@ -590,7 +617,7 @@ def recall_line(rows: list[dict]) -> str:
         return ""
     parts = []
     for r in rows:
-        signals = suspicion(page_frontmatter(r["filename"]))
+        signals = suspicion(r.get("fm") or page_frontmatter(r["filename"]))
         tail = ""
         if signals:
             tail = " (" + marker(signals).strip() + f"; if it holds, `memory verify {r['filename']}`)"
@@ -605,6 +632,16 @@ def recall_line(rows: list[dict]) -> str:
     return render(parts)
 
 
+PLAIN_STDOUT_EVENTS = {"SessionStart", "UserPromptSubmit", "UserPromptExpansion", "PostModelSwitch", ""}
+
+
+def hook_output(event_name: str, text: str) -> str:
+    """What to print for a hook: plain text where Claude Code injects stdout, the JSON envelope elsewhere."""
+    if event_name in PLAIN_STDOUT_EVENTS:
+        return text
+    return json.dumps({"hookSpecificOutput": {"hookEventName": event_name, "additionalContext": text}})
+
+
 def read_event() -> dict:
     """The hook payload on stdin, if any. Adopts its session id for the log."""
     try:
@@ -616,17 +653,25 @@ def read_event() -> dict:
     return event if isinstance(event, dict) else {}
 
 
+LAUNCHERS = {"uv", "uvx", "git", "npm", "npx", "pip", "pip3", "docker", "brew", "gh", "cargo", "go", "make", "claude", "memory", "quest", "ssh", "sudo"}
+
+
 def first_token(command: str) -> str:
+    """The command's identity: its first word, or first two when the first is a launcher like git or uv."""
     toks = command.split()
-    return toks[0] if toks else ""
+    if not toks:
+        return ""
+    if toks[0] in LAUNCHERS and len(toks) > 1 and not toks[1].startswith("-"):
+        return f"{toks[0]} {toks[1]}"
+    return toks[0]
 
 
-RECOVERY_NUDGE = "memory: `{cmd}` failed {n} times this session before it worked. If the fix was not obvious from a file in the repository, write it now: one `memory write` page, kind procedure, with the command that worked and its Sources."
+RECOVERY_NUDGE = "memory: `{cmd}` failed {n} times this session before it worked. If the fix was not obvious from a file in the repository, write one `memory write` page of kind procedure with the command that worked and its Sources. If there is nothing worth a page, say so."
 
 
-def recovered_commands() -> list[tuple[str, int]]:
+def recovered_commands(rows: list[dict] | None = None) -> list[tuple[str, int]]:
     """Commands that failed at least twice this session and then succeeded, not yet nudged and not yet written about."""
-    rows = read_log(session=session_id())
+    rows = read_log(session=session_id()) if rows is None else rows
     if any(r["cmd"] == "write" for r in rows):
         return []
     fails: dict[str, int] = {}
@@ -651,10 +696,12 @@ def cmd_recall(args: argparse.Namespace) -> None:
             cmd = first_token(str((event.get("tool_input") or {}).get("command", "")))
             if cmd:
                 log_event("success", command=cmd)
-            for c, n in recovered_commands():
-                log_event("nudged", command=c)
-                print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": RECOVERY_NUDGE.format(cmd=c, n=n)}}))
-                break
+            recovered = recovered_commands()
+            if recovered:
+                for c, _ in recovered:
+                    log_event("nudged", command=c)
+                text = " ".join(RECOVERY_NUDGE.format(cmd=c, n=n) for c, n in recovered[:3])
+                print(hook_output("PostToolUse", text))
             return
         if args.failure:
             cmd = str((event.get("tool_input") or {}).get("command", ""))
@@ -670,7 +717,7 @@ def cmd_recall(args: argparse.Namespace) -> None:
             line = recall_line(rows)
             log_event("recall", hits=len(rows), pages=[r["filename"] for r in rows], via="failure", chars=len(query))
             if line:
-                print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUseFailure", "additionalContext": line}}))
+                print(hook_output("PostToolUseFailure", line))
             return
         prompt = str(event.get("prompt") or event.get("user_input") or event.get("user_prompt") or "")
         if not recall_worthy(prompt):
@@ -694,7 +741,8 @@ def cmd_search(args: argparse.Namespace) -> None:
     log_event("search", query=" | ".join(queries)[:120], hits=len(results), pages=[r["filename"] for r in results[:5]])
     if args.json:
         for r in results:
-            r.pop("hits", None); r.pop("head_hits", None); r.pop("matched", None)
+            for k in ("hits", "matched", "fm", "head_terms", "rare_terms"):
+                r.pop(k, None)
             r["signals"] = [{"signal": sig, "reason": reason} for sig, reason in suspicion(page_frontmatter(r["filename"]))]
         print(json.dumps(results, indent=2))
         return
@@ -703,7 +751,7 @@ def cmd_search(args: argparse.Namespace) -> None:
         return
     for r in results:
         # refs and age only: a git lookup and a date compare. Checks run in doubt.
-        signals = suspicion(page_frontmatter(r["filename"]))
+        signals = suspicion(r.get("fm") or page_frontmatter(r["filename"]))
         via = ", ".join(r.get("via") or [])
         print(f"{r['filename']}: {r.get('summary', '')} ({distance_text(r)}; via {via}){marker(signals)}")
 
@@ -832,10 +880,17 @@ def list_pages(field: Path | None = None) -> list[Path]:
     return sorted(p for p in field.glob("*.md") if p.name != "index.md")
 
 
+def refuse_symlink(path: Path) -> Path:
+    """A cloned repository can carry a symlink where we write; never follow one."""
+    if path.is_symlink() or path.parent.is_symlink():
+        die(f"refusing to write through a symlink: {path}")
+    return path
+
+
 def regenerate_index(field: Path | None = None) -> None:
     """Rewrite the generated half of index.md: one line per topic with its page count."""
     field = field or FIELD_DIR
-    index_md = field / "index.md"
+    index_md = refuse_symlink(field / "index.md")
     text = index_md.read_text() if index_md.is_file() else INDEX_TEMPLATE
     head = text.split(GENERATED_MARK, 1)[0].rstrip("\n")
     counts: dict[str, int] = {}
@@ -931,7 +986,11 @@ def age_hint(fm: dict, now: datetime | None = None) -> str | None:
 
 
 # redirects are writes, except to /dev/null; the rest are the tools a check must never use
-UNSAFE_CHECK_RE = re.compile(r"(?<![<>])>{1,2}(?!&|\s*/dev/null\b)|\bsed\s+-i|\btee\b|\|\s*(sh|bash|zsh)\b|\beval\b|\brm\b|\bmv\b|\bdd\b|\bchmod\b|\bchown\b|\bkill\b|\bsystemctl\s+(start|stop|restart|enable|disable)|\bcurl\b[^|]*\|")
+UNSAFE_CHECK_RE = re.compile(
+    r"(?<![<>])>{1,2}(?!&|\s*/dev/null\b)"                       # a redirect, except to /dev/null
+    r"|\bsed\s+(-i|--in-place)|\btee\b|\|\s*(sh|bash|zsh)\b|\beval\b"
+    r"|(?:^|[;&|(]\s*|\$\(\s*)(sudo\s+)?(rm|mv|dd|chmod|chown|kill|install|cp)\s"   # as a command, not inside a name
+    r"|\bsystemctl\s+(start|stop|restart|enable|disable)\b|\bcurl\b[^|]*\|")
 
 
 def check_hash(command: str) -> str:
@@ -939,22 +998,14 @@ def check_hash(command: str) -> str:
 
 
 def approved_checks() -> dict[str, str]:
-    path = state_dir() / "checks.json"
-    try:
-        return json.loads(path.read_text()) if path.is_file() else {}
-    except (OSError, ValueError):
-        return {}
+    return read_state_json("checks.json")
 
 
 def approve_check(command: str, page: str) -> None:
     """Record that this machine's user accepted this exact check. Checks from a clone run only after approval."""
     data = approved_checks()
     data[check_hash(command)] = page
-    try:
-        state_dir().mkdir(parents=True, exist_ok=True)
-        (state_dir() / "checks.json").write_text(json.dumps(data, indent=1))
-    except OSError:
-        pass
+    write_state_json("checks.json", data)
 
 
 def check_approved(command: str) -> bool:
@@ -964,7 +1015,7 @@ def check_approved(command: str) -> bool:
 def validate_check(command: str, page: str = "") -> None:
     """A check must be read-only in form and must pass now, or it is refused. Passing approves it on this machine."""
     if UNSAFE_CHECK_RE.search(command):
-        die("check must be read-only: no redirects, sed -i, tee, pipes into a shell, eval, rm, or mv")
+        die("check must be read-only: no redirects (except to /dev/null), sed -i, tee, pipes into a shell, eval, or rm, mv, cp, dd, chmod, chown, kill, install, or systemctl state changes")
     reason = run_check(command)
     if reason:
         die(f"check does not pass now, so it cannot guard this page: {reason}")
@@ -982,11 +1033,16 @@ def run_check(command: str) -> str | None:
     return None
 
 
-# Signal ranks, strongest first. doubt sorts by these.
-RANK = {"ref": 0, "check": 1, "url": 2, "unapproved": 3, "age": 4}
+# Signal kinds: rank, strongest first, and whether the signal means suspect or only a glance.
+SIGNALS = {"ref": (0, "suspect"), "check": (1, "suspect"), "url": (2, "glance"), "unapproved": (3, "glance"), "age": (4, "glance")}
+RANK = {k: v[0] for k, v in SIGNALS.items()}
 
 
-def suspicion(fm: dict, root: Path | None = None, run_checks: bool = False, now: datetime | None = None, check_urls: bool = False) -> list[tuple[str, str]]:
+def label(sig: str) -> str:
+    return SIGNALS[sig][1]
+
+
+def suspicion(fm: dict, root: Path | None = None, run_checks: bool = False, now: datetime | None = None, check_urls: bool = False, approved: dict | None = None) -> list[tuple[str, str]]:
     """List of (signal, reason). 'ref' and 'check' mean suspect; 'url' and 'age' mean glance."""
     root = root or ROOT
     found: list[tuple[str, str]] = []
@@ -1001,7 +1057,7 @@ def suspicion(fm: dict, root: Path | None = None, run_checks: bool = False, now:
         if reason:
             found.append(("ref", reason))
     if run_checks and fm.get("check"):
-        if check_approved(str(fm["check"])):
+        if check_hash(str(fm["check"])) in (approved if approved is not None else approved_checks()):
             reason = run_check(str(fm["check"]))
             if reason:
                 found.append(("check", reason))
@@ -1015,7 +1071,7 @@ def suspicion(fm: dict, root: Path | None = None, run_checks: bool = False, now:
 
 def marker(signals: list[tuple[str, str]]) -> str:
     """One line of markers for search output."""
-    parts = [("glance: " if sig in ("age", "url", "unapproved") else "suspect: ") + reason for sig, reason in signals]
+    parts = [f"{label(sig)}: {reason}" for sig, reason in signals]
     return "  " + "; ".join(parts) if parts else ""
 
 
@@ -1030,11 +1086,18 @@ def page_frontmatter(name: str) -> dict:
 def cmd_doubt(args: argparse.Namespace) -> None:
     """Pages with evidence they may be wrong, strongest signal first."""
     require_field()
+    if args.network:
+        if os.environ.get("MEMORY_ALLOW_NETWORK") != "1":
+            if not sys.stdin.isatty():
+                die("--network contacts every URL cited in memory pages. Ask the creator; they can run it themselves, or set MEMORY_ALLOW_NETWORK=1 for this command.", 2)
+            if not input("Contact every URL cited in memory pages? [y/N]: ").strip().lower().startswith("y"):
+                die("not contacting URLs", 2)
+    approved = approved_checks()
     rows = []
     unchecked_urls = 0
     for page in list_pages():
         fm, _ = parse_page(page.read_text())
-        signals = suspicion(fm, run_checks=True, check_urls=args.network)
+        signals = suspicion(fm, run_checks=True, check_urls=args.network, approved=approved)
         if not args.network:
             unchecked_urls += sum(1 for r in fm.get("refs") or [] if is_url(str(r)))
         if signals or args.all:
@@ -1049,7 +1112,7 @@ def cmd_doubt(args: argparse.Namespace) -> None:
     for name, summary, signals in rows:
         print(f"{name}: {summary}")
         for sig, reason in signals:
-            print(f"    {'glance' if sig in ('age', 'url', 'unapproved') else 'suspect'}: {reason}")
+            print(f"    {label(sig)}: {reason}")
         if not signals:
             print("    clean")
 
@@ -1061,8 +1124,7 @@ def reindex() -> None:
     """Synchronous index so the next search sees the change. Nothing to do in substring mode."""
     if not semantic_enabled():
         return
-    env = tool_env()
-    if not require_host(env):
+    if not require_host():
         return
     proc = tool("index", check=False)
     if proc.returncode:
@@ -1109,12 +1171,7 @@ def cmd_approve(args: argparse.Namespace) -> None:
     cmd = str(fm.get("check") or "")
     if not cmd:
         die(f"{args.page} has no check")
-    if UNSAFE_CHECK_RE.search(cmd):
-        die("refused: the check is not read-only in form")
-    reason = run_check(cmd)
-    if reason:
-        die(f"check fails, not approved: {reason}")
-    approve_check(cmd, args.page)
+    validate_check(cmd, args.page)
     log_event("approve", page=args.page)
     print(f"approved on this machine: `{cmd}`")
 
@@ -1127,10 +1184,14 @@ def cmd_verify(args: argparse.Namespace) -> None:
         die(f"no such page {args.page}")
     fm, body = parse_page(page.read_text())
     if fm.get("check"):
-        reason = run_check(str(fm["check"]))
+        cmd = str(fm["check"])
+        if UNSAFE_CHECK_RE.search(cmd):
+            die("refused: this page's check is not read-only in form; rewrite the page")
+        if not check_approved(cmd):
+            die(f"this page's check is not approved on this machine. Show it to the creator and, on yes, run `memory approve {args.page}`; then verify.")
+        reason = run_check(cmd)
         if reason:
             die(f"cannot verify: {reason}. Fix the page or its check first.")
-        approve_check(str(fm["check"]), args.page)
     fm["verified"] = now_iso()
     if fm.get("refs"):
         # re-confirmed against the cited files as they are now, so cite them as they are now
@@ -1218,7 +1279,7 @@ def cmd_init(args: argparse.Namespace) -> None:
             tool("write", "--force", "index.md", stdin=INDEX_TEMPLATE, check=False)
         made.append(".memory/")
     regenerate_index()
-    claude_md = ROOT / "CLAUDE.md"
+    claude_md = refuse_symlink(ROOT / "CLAUDE.md")
     text = claude_md.read_text() if claude_md.is_file() else ""
     if CLAUDE_MD_MARK not in text:
         claude_md.write_text(text.rstrip("\n") + "\n" + CLAUDE_MD_PARAGRAPH if text else CLAUDE_MD_PARAGRAPH.lstrip("\n"))
@@ -1276,7 +1337,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
     print(f"semantic search with embedding host {host} written to {path}")
     if os.environ.get("OLLAMA_HOST"):
         print("note: OLLAMA_HOST is exported in this shell and wins over the setup file")
-    if not host_answers(host):
+    if not host_answers(host, fresh=True):
         print(f"{host} does not answer yet. " + ("Run `memory doctor --fix` to install ollama here." if host == normalize_host(DEFAULT_HOST) else "Start ollama there, then run `memory doctor`."))
         return
     if model_present(host, pin["model"]):
@@ -1304,11 +1365,34 @@ def git_status_of(path: str) -> str:
     return "tracked" if tracked else "untracked"
 
 
+def git_states(paths: tuple[str, ...]) -> dict[str, str]:
+    """One rev-parse, one check-ignore, one ls-files for every path together."""
+    try:
+        subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--is-inside-work-tree"], capture_output=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return {p: "no-git" for p in paths}
+    present = [p for p in paths if (ROOT / p).exists()]
+    ignored = set(subprocess.run(["git", "-C", str(ROOT), "check-ignore", "--", *present], capture_output=True, text=True).stdout.split()) if present else set()
+    tracked = set(subprocess.run(["git", "-C", str(ROOT), "ls-files", "--", *present], capture_output=True, text=True).stdout.split()) if present else set()
+    out = {}
+    for p in paths:
+        if p not in present:
+            out[p] = "missing"
+        elif p in ignored:
+            out[p] = "ignored"
+        elif any(t == p or t.startswith(p + "/") for t in tracked):
+            out[p] = "tracked"
+        else:
+            out[p] = "untracked"
+    return out
+
+
 def git_checks() -> list[tuple[bool, str, str]]:
     """Rows for doctor: what must be in the repository so memory and settings persist."""
     rows = []
+    states = git_states(PERSISTED)
     for path in PERSISTED:
-        state = git_status_of(path)
+        state = states[path]
         if state == "no-git":
             return [(False, "this directory is a git repository", "git init, then commit .memory/ and .claude/settings.json")]
         label = {"tracked": f"{path} is committed", "untracked": f"{path} is not committed", "ignored": f"{path} is ignored by git", "missing": f"{path} does not exist"}[state]
@@ -1352,17 +1436,13 @@ def install_tool(pin: dict[str, str]) -> bool:
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
-    pin = read_pin()
     if args.brief:
         event = read_event()
         hook = str(event.get("hook_event_name") or "")
         source = str(event.get("source") or "")
 
         def emit(line: str) -> None:
-            if hook == "SubagentStart":
-                print(json.dumps({"hookSpecificOutput": {"hookEventName": "SubagentStart", "additionalContext": line}}))
-            else:
-                print(line)
+            print(hook_output(hook, line))
         if not config_file().is_file():
             emit("memory: not set up on this machine. Ask the creator whether embeddings come from ollama on this machine or on a remote host (semantic search, the default), or whether ollama cannot run here at all (string search fallback); then run `memory setup` with their answer, `memory init` if this repository has no .memory/, and `memory doctor --fix`.")
             return
@@ -1400,10 +1480,11 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         if n > 50:
             parts.append(f"{n} pages is a lot: merge or delete before writing more.")
         parts.append("A hook names matching pages when the creator prompts; read them. `memory search QUERY` before an install, a fix, or a design.")
-        if source == "compact" and session_counts()["writes"] == 0:
-            parts.append("Context was just compacted and this session wrote no memory: if the summary above names a fix that took more than one attempt, write it now.")
+        if source == "compact" and session_writes() == 0:
+            parts.append("Context was just compacted and this session wrote no memory. If the summary above names a fix that took more than one attempt, write it now.")
         emit(" ".join(parts))
         return
+    pin = read_pin()
     ok = True
 
     def report(label: str, good: bool, fix: str = "") -> bool:
@@ -1433,10 +1514,9 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             subprocess.run(["brew", "install", "ollama"])
         subprocess.run(["brew", "services", "start", "ollama"])
         for _ in range(15):
-            if host_answers(base):
+            if host_answers(base, fresh=True):
                 up = True
                 break
-            import time
             time.sleep(1)
     if local:
         fix = "brew install ollama && brew services start ollama" if platform.system() == "Darwin" else "curl -fsSL https://ollama.com/install.sh | sh"
@@ -1473,9 +1553,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 # --- nudges (hooks) -----------------------------------------------------------
 
 
-def session_counts() -> dict[str, int]:
-    rows = read_log(session=session_id())
-    return {"writes": sum(r["cmd"] == "write" for r in rows), "failures": sum(r["cmd"] == "failure" for r in rows), "reads": sum(r["cmd"] in ("read", "pull") for r in rows)}
+def session_writes() -> int:
+    return sum(r["cmd"] == "write" for r in read_log(session=session_id()))
 
 
 def cmd_nudge(args: argparse.Namespace) -> None:
@@ -1487,12 +1566,12 @@ def cmd_nudge(args: argparse.Namespace) -> None:
         rows = read_log(session=session_id())
         if any(r["cmd"] == "stop-nudged" for r in rows):
             return
-        recovered = recovered_commands()
+        recovered = recovered_commands(rows)
         if not recovered:
             return
         log_event("stop-nudged")
         names = ", ".join(f"`{c}` ({n} failures)" for c, n in recovered[:3])
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": f"memory: before you stop: {names} failed and then worked this session, and nothing was written to memory. If the fix was not obvious from a file in the repository, write one page per finding with `memory write`; if there is nothing worth a page, say so and stop. This appears once per session."}}))
+        print(hook_output("Stop", f"memory: before you stop, note that {names} failed and then worked this session, and nothing was written to memory. If the fix was not obvious from a file in the repository, write one page per finding with `memory write`. If there is nothing worth a page, say so and stop. This appears once per session."))
 
 
 def cmd_stats(args: argparse.Namespace) -> None:
@@ -1595,7 +1674,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--success", action="store_true", help="PostToolUse: log the command; nudge to write when it had failed twice before")
     p.set_defaults(func=cmd_recall)
 
-    p = sub.add_parser("nudge", help="hook entry: PreCompact or Stop reminder to write")
+    p = sub.add_parser("nudge", help="hook entry: Stop reminder to write, once per session")
     p.add_argument("--stop", action="store_true")
     p.set_defaults(func=cmd_nudge)
 
@@ -1605,7 +1684,7 @@ def main(argv: list[str] | None = None) -> None:
 
     args = parser.parse_args(argv)
     set_root(project_root())
-    if args.command not in ("doctor", "init", "setup", "recall", "nudge", "stats", "approve"):
+    if args.command not in ("doctor", "init", "setup", "recall", "nudge", "stats"):
         check_format()
     args.func(args)
 

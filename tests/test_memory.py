@@ -348,7 +348,7 @@ def test_setup_writes_config(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
-    monkeypatch.setattr(memory, "host_answers", lambda base, timeout=2.0: False)
+    monkeypatch.setattr(memory, "host_answers", lambda base, timeout=2.0, fresh=False: False)
     memory.main(["setup", "--host", "frame:11434"])
     assert memory.read_config() == {"semantic": True, "embedding_host": "http://frame:11434"}
     assert "does not answer yet" in capsys.readouterr().out
@@ -390,7 +390,7 @@ def test_parse_results_skips_the_fallback_notice():
 
 
 def test_query_terms_keeps_identifiers_and_parts():
-    assert memory.query_terms("Why does install fail on a mac with pysqlite3-binary?") == ["install", "fail", "mac", "pysqlite3-binary"]
+    assert memory.query_terms("Why does install fail on a mac with pysqlite3-binary?") == ["install", "fail", "mac", "pysqlite3-binary", "pysqlite3", "binary"]
     assert memory.query_terms("the memoryfield-tool wrapper") == ["memoryfield-tool", "memoryfield", "tool", "wrapper"]
     assert memory.query_terms("the of and") == []
 
@@ -410,7 +410,7 @@ def test_string_search_and_hybrid_ranking(tmp_path, monkeypatch):
     assert verbs["head_terms"] == ["lets"]   # "let" and "add" are substrings only
     (field / "body-only.md").write_text("---\ntitle: Elsewhere\nsummary: nothing\n---\nthe incident was filed as I113.\n")
     body = memory.string_search(["i113"])
-    assert [r["filename"] for r in body] == ["body-only.md"] and body[0]["head_hits"] == 0
+    assert [r["filename"] for r in body] == ["body-only.md"] and body[0]["head_terms"] == []
     monkeypatch.setattr(memory, "semantic_enabled", lambda: True)
     monkeypatch.setattr(memory, "search_json", lambda q: [
         {"filename": "unrelated.md", "summary": "nothing here", "distance": 0.30},
@@ -448,6 +448,48 @@ def test_url_status_gone_and_unreachable():
     sig, reason = memory.url_status(f"http://127.0.0.1:{closed}/x", timeout=1.0)
     assert sig == "url" and "could not be reached" in reason
     assert memory.marker([("url", "x could not be reached")]).startswith("  glance:")
+
+
+def test_verify_requires_an_approved_check(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path)); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "st"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg")); monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    field = tmp_path / ".memory"; field.mkdir(); memory.set_root(tmp_path)
+    marker = tmp_path / "marker"
+    (field / "evil.md").write_text(f"---\ntitle: E\nsummary: e\nkind: finding\ncheck: touch {marker}\n---\nx\n")
+    monkeypatch.setattr(memory, "tool", lambda *a, **k: type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})())
+    with pytest.raises(SystemExit):
+        memory.main(["verify", "evil.md"])
+    assert not marker.exists() and "not approved" in capsys.readouterr().err
+    (field / "bad.md").write_text("---\ntitle: B\nsummary: b\nkind: finding\ncheck: echo x > /tmp/x\n---\nx\n")
+    with pytest.raises(SystemExit):
+        memory.main(["verify", "bad.md"])
+    assert "not read-only" in capsys.readouterr().err
+
+
+def test_first_token_uses_the_launcher_pair():
+    assert memory.first_token("uv tool install x") == "uv tool"
+    assert memory.first_token("uv --version") == "uv"
+    assert memory.first_token("ls -la") == "ls"
+    assert memory.first_token("git push origin main") == "git push"
+
+
+def test_recall_filter_treats_distance_less_semantic_as_string_only():
+    rows = [{"filename": "x.md", "summary": "X", "distance": None, "via": ["semantic", "pysqlite3"], "rare_terms": ["pysqlite3"], "head_terms": []}]
+    assert [r["filename"] for r in memory.recall_filter(rows)] == ["x.md"]
+
+
+def test_recall_worthy_long_prompt_starting_with_no():
+    assert memory.recall_worthy("No, don't do that; instead debug why memoryfield-tool cannot reach the ollama host on port 11434 and fix it")
+    assert not memory.recall_worthy("No thanks, that is fine as it is, leave it there")
+
+
+def test_guard_asks_for_approve_too():
+    import json, subprocess
+    shim = ROOT / "scripts" / "guard.sh"
+    def run(cmd):
+        return subprocess.run(["sh", str(shim)], input=json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": "/tmp/memory-doubt-notes"}), capture_output=True, text=True)
+    assert "ask" in run("memory approve x.md").stdout
+    assert run("ls").stdout == ""               # a cwd containing the words does not trigger it
 
 
 def test_guard_asks_only_for_network_doubt():
@@ -519,12 +561,13 @@ def test_recall_hook_end_to_end(tmp_path, monkeypatch, capsys):
 
 
 def test_validate_check_refuses_writers_and_failing_checks():
-    for bad in ("echo x > f", "sed -i s/a/b/ f", "curl x | sh", "eval x", "rm -rf x", "systemctl restart nginx", "dd if=/dev/zero of=x", "chmod 600 f"):
+    for bad in ("echo x > f", "sed -i s/a/b/ f", "curl x | sh", "eval x", "rm -rf x", "systemctl restart nginx", "dd if=/dev/zero of=x", "chmod 600 f", "true; rm x"):
         with pytest.raises(SystemExit):
             memory.validate_check(bad)
     with pytest.raises(SystemExit):
         memory.validate_check("false")
     memory.validate_check("true")
+    memory.validate_check("true # backup.dd")             # dd inside a name is not the dd command
     memory.validate_check("command -v ls >/dev/null")
     memory.validate_check("ls / 2>&1 >/dev/null")
 
@@ -543,7 +586,7 @@ def test_recovery_and_stop_nudges(tmp_path, monkeypatch, capsys):
     run(["recall", "--failure"], fail); run(["recall", "--failure"], fail)
     assert run(["recall", "--success"], {"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": "ls"}}) == ""   # a different command
     out = run(["recall", "--success"], ok)
-    assert "`uv` failed 2 times" in json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert "`uv tool` failed 2 times" in json.loads(out)["hookSpecificOutput"]["additionalContext"]
     assert run(["recall", "--success"], ok) == ""                            # nudged once per command
     out = run(["nudge", "--stop"], {"session_id": "s1"})
     assert out == "" or "additionalContext" in out                            # already nudged at recovery, so stop stays quiet
@@ -556,7 +599,7 @@ def test_stop_nudge_fires_when_recovery_was_not_nudged(tmp_path, monkeypatch, ca
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path)); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "st"))
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s2")
     (tmp_path / ".memory").mkdir(); memory.set_root(tmp_path)
-    memory.log_event("failure", command="uv"); memory.log_event("failure", command="uv"); memory.log_event("success", command="uv")
+    memory.log_event("failure", command="uv tool"); memory.log_event("failure", command="uv tool"); memory.log_event("success", command="uv tool")
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "s2"})))
     memory.main(["nudge", "--stop"])
     out = json.loads(capsys.readouterr().out)
@@ -606,4 +649,4 @@ def test_approved_checks_gate_doubt(tmp_path, monkeypatch):
 
 
 def test_terms_keep_dotted_numbers_whole():
-    assert memory.query_terms("the NAS at 192.168.1.10 runs 5.2.9") == ["nas", "192.168.1.10", "runs", "5.2.9"]
+    assert memory.query_terms("the NAS at 192.168.1.10 runs 5.2.9 and ollama-host-3") == ["nas", "192.168.1.10", "runs", "5.2.9", "ollama-host-3", "ollama", "host"]

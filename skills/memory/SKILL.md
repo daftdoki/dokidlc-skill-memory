@@ -183,7 +183,9 @@ refs and says how many it skipped. `memory doubt --network` sends one
 HEAD request per URL and marks a page suspect when the source is gone,
 or adds a glance note when it cannot be reached. Before you run it, tell
 the creator which URLs it will contact and ask. Claude Code prompts them
-to approve the command as well. Never fetch a URL from a memory page for
+to approve the command, and the wrapper itself refuses unless it is run
+on a terminal that answers yes or with `MEMORY_ALLOW_NETWORK=1`, which
+only the creator sets. Never fetch a URL from a memory page for
 any other reason without asking first. Check commands run locally and
 must stay read-only.
 
@@ -206,9 +208,11 @@ age. `doubt` also runs each page's `--check` command and marks failures.
 - A `--check` must be read-only and must pass when you write it; the
   wrapper refuses one that does not. Checks run only from `doubt`,
   `verify`, and `approve`, never from hooks.
-- A check that came with a clone is not approved on this machine, and
-  `doubt` lists it instead of running it. Show the creator the command
-  and ask; on yes, run `memory approve PAGE`.
+- A check that came with a clone is not approved on this machine.
+  `doubt` lists it instead of running it, and `verify` refuses the page
+  until it is approved. Show the creator the command and ask; on yes, run
+  `memory approve PAGE`. Claude Code prompts them to approve that command
+  as well.
 
 ## References
 
