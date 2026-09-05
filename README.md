@@ -9,13 +9,15 @@ is trusted until there is evidence against it: a cited file changed since
 it was cited, a self-check failed, or a contradiction was met in use. Age
 alone is only a hint.
 
-With it enabled, the agent will on its own: search memory before it
-investigates, installs, configures, or debugs anything; write a page when
-it learns something a future session would otherwise rediscover; correct
-or delete a page it finds wrong, in the same turn; and re-check a page
-that search marks as suspect. Nothing in memory needs your approval, and
-nothing the creator asked for goes there. Memory is what the agent learned
-by itself; documents you review stay in `docs/`.
+With it enabled, the agent will on its own: see matching pages named
+every time you send a prompt, and again when a command fails; search
+before it installs, configures, debugs, or designs; write a page when
+something took more than one attempt, when a quest stage closes, and
+when a hook warns that the session learned things it has not written;
+correct or delete a page it finds wrong, in the same turn; and re-check a
+page that search marks as suspect. Nothing in memory needs your approval,
+and nothing you asked for goes there. Memory is what the agent learned by
+itself; documents you review stay in `docs/`.
 
 ## Why another memory system?
 
@@ -62,6 +64,8 @@ steer it:
 - "That page about the tailnet host is wrong now, the host is gone." The
   agent rewrites or deletes it.
 - "How much context does memory cost?" `memory cost`.
+- "Is memory getting used?" `memory stats`: searches per session, how often
+  a named page was then read, pages written.
 - "Set up memory" or "switch memory to string search, ollama can't run here." The agent asks
   its questions and runs `memory setup`, `init`, and `doctor --fix`.
 
@@ -76,7 +80,22 @@ memory doubt                                        pages with evidence they may
 memory verify ollama-host-silent-hang.md            re-confirmed; refresh its refs
 memory delete stale-page.md
 memory cost                                         bytes and tokens of index and search
+memory stats [--days N]                             searches, reads after a hit, writes, from a local log
 ```
+
+### Hooks
+
+The plugin registers these hooks. All of them fail open and none runs a
+page's check command.
+
+| When | What the agent sees |
+|---|---|
+| Session start, and each subagent start | One line: page count, search mode, top topics, any page whose cited file changed. |
+| Every prompt you send | If pages match, one line naming up to three with the `memory read` command for each. Short prompts and one-word answers are skipped. At most 400 bytes. |
+| A shell command fails | The same line, searched with the command and its error. |
+| Context is about to be compacted | A reminder to write what was learned, only if this session wrote nothing. |
+| The agent is about to stop | Once per session, only if two or more commands failed and nothing was written: a prompt to write the fix first. |
+| The agent runs `memory doubt --network` | Claude Code asks you to approve it. |
 
 ### Memory pages
 

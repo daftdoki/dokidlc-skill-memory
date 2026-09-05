@@ -1,5 +1,6 @@
 """Tests for scripts/memory that need neither the tool nor ollama."""
 
+import json
 import socket
 import threading
 import importlib.util
@@ -284,7 +285,7 @@ def test_doctor_brief_guides_setup(tmp_path, monkeypatch, capsys):
     memory.main(["init"]); capsys.readouterr()
     memory.main(["doctor", "--brief"])
     out = capsys.readouterr().out
-    assert "memory: ok, 0 pages" in out and "Persistence:" in out   # no git repo yet
+    assert out.startswith("memory: 0 pages, string search.") and "Persistence:" in out   # no git repo yet
 
 
 def test_git_checks_and_init_staging(tmp_path, monkeypatch):
@@ -451,3 +452,76 @@ def test_guard_asks_only_for_network_doubt():
     assert run("git status").stdout == ""
     out = json.loads(run("memory doubt --network").stdout)
     assert out["hookSpecificOutput"]["permissionDecision"] == "ask"
+
+
+def test_recall_gates_and_filter():
+    assert not memory.recall_worthy("yes")
+    assert not memory.recall_worthy("3> agree, and the second one too, please go ahead")
+    assert not memory.recall_worthy("/plugin install memory@dokidlc and then something long enough")
+    assert memory.recall_worthy("why does installing memoryfield-tool fail on this mac")
+    rows = [
+        {"filename": "both.md", "summary": "B", "distance": 0.45, "via": ["semantic", "install"]},
+        {"filename": "close.md", "summary": "C", "distance": 0.30, "via": ["semantic"]},
+        {"filename": "far.md", "summary": "F", "distance": 0.44, "via": ["semantic"]},
+        {"filename": "ident.md", "summary": "I", "distance": None, "via": ["pysqlite3"]},
+        {"filename": "word.md", "summary": "W", "distance": None, "via": ["fix"]},
+    ]
+    assert [r["filename"] for r in memory.recall_filter(rows)] == ["both.md", "close.md", "ident.md"]
+
+
+def test_recall_line_names_read_commands_and_is_bounded(tmp_path, monkeypatch):
+    memory.set_root(tmp_path); (tmp_path / ".memory").mkdir()
+    rows = [{"filename": f"page-{i}.md", "summary": "s" * 150, "distance": 0.2, "via": ["semantic"]} for i in range(3)]
+    line = memory.recall_line(rows)
+    assert line.startswith("memory: ") and "`memory read page-0.md`" in line
+    assert len(line.encode()) <= memory.RECALL_MAX_BYTES
+    assert "page-2.md" not in line or line.count("`memory read") == 3   # whole entries dropped, never cut
+    assert memory.recall_line([]) == ""
+
+
+def test_recall_hook_end_to_end(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path)); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "st"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg")); monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    field = tmp_path / ".memory"; field.mkdir()
+    (field / "pysqlite3-install-override.md").write_text("---\ntitle: pysqlite3-binary blocks install\nsummary: the uv override\ntopics: [install]\nkind: environment\n---\nx\n")
+    memory.write_config_file({"semantic": False})
+    import io
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"prompt": "why does uv tool install memoryfield-tool fail with pysqlite3-binary"})))
+    memory.main(["recall"])
+    out = capsys.readouterr().out
+    assert "`memory read pysqlite3-install-override.md`" in out
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"prompt": "yes"})))
+    memory.main(["recall"]); assert capsys.readouterr().out == ""
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": "uv tool install memoryfield-tool"}, "error": "no wheels for pysqlite3-binary"})))
+    memory.main(["recall", "--failure"])
+    out = json.loads(capsys.readouterr().out)
+    assert "pysqlite3-install-override.md" in out["hookSpecificOutput"]["additionalContext"]
+    rows = memory.read_log()
+    assert [r["cmd"] for r in rows] == ["recall", "failure", "recall"]
+
+
+def test_validate_check_refuses_writers_and_failing_checks():
+    for bad in ("echo x > f", "sed -i s/a/b/ f", "curl x | sh", "eval x", "rm -rf x"):
+        with pytest.raises(SystemExit):
+            memory.validate_check(bad)
+    with pytest.raises(SystemExit):
+        memory.validate_check("false")
+    memory.validate_check("true")
+
+
+def test_nudges_and_stats(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path)); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "st"))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s1")
+    (tmp_path / ".memory").mkdir()
+    memory.set_root(tmp_path)
+    memory.main(["nudge", "--stop"]); assert capsys.readouterr().out == ""          # no failures yet
+    memory.log_event("failure", command="uv"); memory.log_event("failure", command="uv")
+    memory.main(["nudge", "--stop"]); assert "block" in capsys.readouterr().out
+    memory.main(["nudge", "--stop"]); assert capsys.readouterr().out == ""          # once per session
+    memory.main(["nudge", "--compact"]); assert "compaction is next" in capsys.readouterr().out
+    memory.log_event("write", page="a.md", kind="finding")
+    memory.main(["nudge", "--compact"]); assert capsys.readouterr().out == ""
+    memory.log_event("search", query="q", hits=1, pages=["a.md"]); memory.log_event("read", pages=["a.md"])
+    memory.main(["stats"])
+    out = capsys.readouterr().out
+    assert "1 session" in out and "read after a search or recall named it: 1/1" in out

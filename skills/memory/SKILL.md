@@ -77,9 +77,21 @@ it overwrites their choice.
 
 ## When to search
 
-Before you investigate, install, configure, or debug anything. Before you
-re-derive a convention. One search costs about thirty tokens per result.
-Rediscovery costs a session.
+A hook searches memory on every prompt the creator sends and, when pages
+match, adds one line naming them with the exact `memory read` command.
+Read those pages before you do anything else. The same hook runs when a
+shell command fails, with the command and its error as the query.
+
+Search yourself at these moments, without being asked:
+
+- before you install, configure, or upgrade anything: the tool's name
+- before you debug: the error text and the tool's name
+- before you design or recommend: the topic, for `decision` pages
+- before you write a plan: each tool the plan touches, for `procedure` pages
+- when the creator says "remember", "did we", "last time", or "again"
+
+One search costs about thirty tokens per result. Rediscovery costs a
+session.
 
 ## How search ranks
 
@@ -115,13 +127,43 @@ know the limit is the mode and not the memory.
 
 ## When to write
 
-When you learned something on your own that a future session would
-otherwise re-learn: a quirk of a tool, a procedure that worked, a finding
-about the environment, a decision and its reason. One topic per page, under
-8KB. A page ends with `## Sources`: files read, commands run, URLs, dates.
+Write at these moments, without being asked:
 
-Documents the creator asked for or reviewed belong in `docs/`, not here. A
-memory page may cite a document with `--ref`. A document never cites memory.
+- when something took more than one attempt, and the fix was not obvious
+  from a file in the repository
+- when a stage of a quest closes: one page per finding you established
+  on your own during research, design, or plan, each citing the stage
+  document with `--ref`
+- when a hook says compaction is next, or that this session hit failures
+  and wrote nothing: write what a future session would otherwise re-derive
+- when the creator says "remember"
+
+Four rules keep the field worth searching:
+
+1. A page says something you could not get by reading a file in the
+   repository in under a minute. A path, a version, or a config value
+   alone is not a page.
+2. One finding per page, so a wrong page can be deleted without losing a
+   right one. One topic, under 8KB.
+3. Sources names a command you ran, a file you read at a commit, or a URL
+   you read, with a date. "Observed" is not a source.
+4. A page about a workaround says what it works around, so the fix can
+   delete the page.
+
+Shapes by kind, so the next session gets what it needs:
+
+- `environment`: the fact, where it is true (which machine, host, or
+  version), how you confirmed it, and a `--check` that confirms it again.
+- `procedure`: the command block verbatim, what it produces, and the one
+  thing that goes wrong.
+- `finding`: the claim, the evidence, and what it changes about how to
+  work.
+- `decision`: what was chosen, what it was chosen over, who chose it, and
+  why.
+
+Documents the creator asked for or reviewed belong in `docs/`, not here.
+A memory page may cite a document with `--ref`. A document never cites
+memory.
 
 ## Kinds
 
@@ -154,7 +196,14 @@ age. `doubt` also runs each page's `--check` command and marks failures.
   `verify` it, rewrite it, or `delete` it. In the same turn.
 - `glance`: optional. Skim if the page matters to what you are doing.
 - Found wrong in use, marked or not: rewrite or delete it in the same turn.
-- Found right in use: `verify` it. One command.
+  Every `memory read` ends with the commands.
+- Found right in use: `verify` it. One command. `verify` re-runs the
+  page's check.
+- Run `memory doubt` when the session-start line names a suspect, after a
+  `git pull`, and before you close a quest stage.
+- A `--check` must be read-only and must pass when you write it; the
+  wrapper refuses one that does not. Checks run only from `doubt` and
+  `verify`, never from hooks.
 
 ## References
 
