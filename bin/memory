@@ -1085,7 +1085,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         current = pat.search(text)
         wanted = CLAUDE_MD_PARAGRAPH.strip("\n")
         if current and current.group(0).strip() != wanted:
-            claude_md.write_text(text[:current.start()] + wanted + text[current.end():])
+            claude_md.write_text(text[:current.start()] + wanted + "\n" + text[current.end():])
             made.append("CLAUDE.md paragraph refreshed")
     git_add([".memory", "CLAUDE.md"])
     print("initialized: " + ", ".join(made) if made else "already initialized; nothing changed")
