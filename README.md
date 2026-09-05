@@ -107,12 +107,17 @@ goes silent, because the client has no timeout.
 | `summary` | One sentence. Search shows this line. |
 | `topics` | One or two tags. They make the topic list in `index.md`. |
 | `kind` | `environment`, `procedure`, `finding`, or `decision`. Says how fast the page can go stale. |
-| `refs` | Files this page cites, each at a commit. If the file changes, the page becomes suspect. |
+| `refs` | Files this page cites, each at a commit, or URLs. If a file changes, the page becomes suspect. URLs are checked only when you allow it. |
 | `check` | A read-only command. If it fails, the page becomes suspect. |
 | `verified` | When the agent last confirmed the page is still true. |
 
 Every page ends with a Sources section. It says where the fact came from,
 so a later session can check it.
+
+URLs in `refs` are never contacted by search. The agent checks them only
+when you say it may. It asks first, and Claude Code prompts you to
+approve the command. A URL that answers "gone" makes the page suspect. A
+URL that does not answer adds a glance note.
 
 The kind sets an age. An `environment` page is old after 30 days, a
 `procedure` after 90, a `finding` after 180. A `decision` never gets

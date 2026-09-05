@@ -389,3 +389,40 @@ def test_string_search_and_hybrid_ranking(tmp_path, monkeypatch):
     monkeypatch.setattr(memory, "semantic_enabled", lambda: False)
     rows = memory.hybrid_search("hang")
     assert [r["filename"] for r in rows] == ["ollama-host-silent-hang.md"] and rows[0]["via"] == ["hang"]
+
+
+def test_url_refs_are_kept_and_never_checked_in_search(tmp_path):
+    assert memory.fill_ref("https://example.com/x", tmp_path) == "https://example.com/x"
+    assert memory.ref_changed("https://example.com/x", tmp_path) is None
+    assert memory.suspicion({"refs": ["https://example.com/x"]}, tmp_path) == []
+
+
+def test_url_status_gone_and_unreachable():
+    import http.server, threading, socket
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            self.send_response(404 if self.path == "/gone" else 200); self.end_headers()
+        def log_message(self, *a): pass
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H); port = srv.server_port
+    t = threading.Thread(target=srv.serve_forever, daemon=True); t.start()
+    try:
+        assert memory.url_status(f"http://127.0.0.1:{port}/ok") is None
+        sig, reason = memory.url_status(f"http://127.0.0.1:{port}/gone")
+        assert sig == "ref" and "gone" in reason
+    finally:
+        srv.shutdown()
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); closed = s.getsockname()[1]; s.close()
+    sig, reason = memory.url_status(f"http://127.0.0.1:{closed}/x", timeout=1.0)
+    assert sig == "url" and "could not be reached" in reason
+    assert memory.marker([("url", "x could not be reached")]).startswith("  glance:")
+
+
+def test_guard_asks_only_for_network_doubt():
+    import json, subprocess
+    shim = ROOT / "scripts" / "guard.sh"
+    def run(cmd):
+        return subprocess.run(["sh", str(shim)], input=json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}}), capture_output=True, text=True)
+    assert run("memory doubt").stdout == ""
+    assert run("git status").stdout == ""
+    out = json.loads(run("memory doubt --network").stdout)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "ask"

@@ -16,7 +16,7 @@ memory search "what am I looking for"     ranked pages with summary and markers
 memory search term1 term2 term3           several terms, searched separately, merged
 memory pull "what am I looking for"       full text of the matching pages
 memory read PAGE.md                       one page
-memory doubt                              pages with evidence they may be wrong
+memory doubt [--network]                  pages with evidence they may be wrong; --network checks URL refs, with permission
 memory verify PAGE.md                     you re-confirmed it; record that and refresh its refs
 memory delete PAGE.md
 memory setup [--local|--host URL|--substring]   embedding host, or the string fallback; once per machine
@@ -131,6 +131,17 @@ memory page may cite a document with `--ref`. A document never cites memory.
 | `procedure` | steps that worked | 90 days |
 | `finding` | something learned about the domain | 180 days |
 | `decision` | a choice and its reason | never |
+
+## Network and URLs
+
+A ref may be a URL. Search never contacts it. `memory doubt` skips URL
+refs and says how many it skipped. `memory doubt --network` sends one
+HEAD request per URL and marks a page suspect when the source is gone,
+or adds a glance note when it cannot be reached. Before you run it, tell
+the creator which URLs it will contact and ask. Claude Code prompts them
+to approve the command as well. Never fetch a URL from a memory page for
+any other reason without asking first. Check commands run locally and
+must stay read-only.
 
 ## Trust and doubt
 
