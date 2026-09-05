@@ -13,6 +13,7 @@ delete a page the moment you find it wrong.
 
 ```
 memory search "what am I looking for"     ranked pages with summary and markers
+memory search term1 term2 term3           several terms, searched separately, merged
 memory pull "what am I looking for"       full text of the matching pages
 memory read PAGE.md                       one page
 memory doubt                              pages with evidence they may be wrong
@@ -79,6 +80,29 @@ it overwrites their choice.
 Before you investigate, install, configure, or debug anything. Before you
 re-derive a convention. One search costs about thirty tokens per result.
 Rediscovery costs a session.
+
+## Searching in string mode
+
+When `doctor` says the mode is string, or a search result says "string
+match", the engine matches exact text in filenames, titles, and summaries
+and nothing else. A question sent as-is finds nothing. Do this instead:
+
+1. Pull the distinctive terms out of the question: tool names, file
+   names, error text, hostnames, the one noun the page would have to
+   mention. "Why does install fail on a mac" becomes `install`,
+   `pysqlite3`, `macos`, `wheel`.
+2. Search them together in one call; each term is searched separately
+   and the results are merged, pages matching more terms first:
+   `memory search install pysqlite3 macos wheel`.
+3. Nothing? Read `.memory/index.md` for the topic list and search the
+   nearest topics. Try shorter stems (`instal`, `sqlite`) and synonyms.
+4. Read the top two or three pages with `memory pull` or `memory read`
+   rather than stopping at the summaries; a string hit says less about
+   relevance than a semantic one.
+
+Prefer two or three focused searches to one broad one. Tell the creator
+when a search came back empty in string mode, so they know the limit is
+the mode and not the memory.
 
 ## When to write
 

@@ -68,6 +68,7 @@ The commands, for reference:
 
 ```
 memory search "why does install fail on a mac"     ranked pages, with markers
+memory search install pysqlite3 wheel               several terms, merged; how the agent searches in string mode
 memory pull "embedding host"                        full text of matching pages
 memory read ollama-host-silent-hang.md
 memory doubt                                        pages with evidence they may be wrong
@@ -178,7 +179,10 @@ network, a machine you cannot install on. It needs nothing. A query
 matches pages whose filename, title, or summary contain the text you
 typed, so you search the way you would grep, with the exact term you
 expect to be there: "pysqlite3" finds the missing-wheel page, "why does
-install fail on a mac" finds nothing. Memory still works, less well.
+install fail on a mac" finds nothing. The agent knows this: in string
+mode it breaks a question into its distinctive terms, searches them
+together with results merged, and tries stems and synonyms before giving
+up. Memory still works, less well.
 Choose it with `memory setup --substring`; switch back with
 `memory setup --local` or `memory setup --host URL`. If a semantic host
 stops answering, search falls back to string matching for that query and

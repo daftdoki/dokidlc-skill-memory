@@ -344,3 +344,18 @@ def test_semantic_is_on_by_default(tmp_path, monkeypatch):
     assert memory.semantic_enabled() is True
     memory.write_config_file({"semantic": False})
     assert memory.semantic_enabled() is False
+
+
+def test_merge_results_unions_and_ranks():
+    a = [{"filename": "x.md", "summary": "X", "distance": 0.4}, {"filename": "y.md", "summary": "Y", "distance": None}]
+    b = [{"filename": "y.md", "summary": "Y", "distance": None}, {"filename": "z.md", "summary": "Z", "distance": 0.2}]
+    rows = memory.merge_results([("one", a), ("two", b)])
+    assert [r["filename"] for r in rows] == ["y.md", "z.md", "x.md"]     # matched by both terms first, then by distance
+    assert rows[0]["matched"] == ["one", "two"]
+
+
+def test_parse_results_skips_the_fallback_notice():
+    noisy = 'embedding failed: Failed to connect to Ollama.\n[\n  {"filename": "a.md", "summary": "A", "distance": null}\n]\n'
+    assert memory.parse_results(noisy) == [{"filename": "a.md", "summary": "A", "distance": None}]
+    assert memory.parse_results("") == []
+    assert memory.parse_results("garbage") == []

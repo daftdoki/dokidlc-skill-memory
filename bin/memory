@@ -11,7 +11,7 @@ repository location, guards the embedding host, keeps index.md current, and
 computes suspicion. It never reimplements storage, search, or indexing.
 
 Usage:
-  memory search QUERY          ranked pages: filename, summary, distance
+  memory search QUERY...       ranked pages; several terms are searched separately and merged
   memory pull QUERY            full text of matching pages
   memory read PAGE...          print pages
   memory write PAGE [flags]    body on stdin; see write --help
@@ -338,16 +338,40 @@ def search_json(query: str) -> list[dict]:
     proc = tool("search", "--json", query, check=False)
     if proc.returncode not in (0, 1):
         die(proc.stderr.strip() or "search failed")
+    return filter_results(parse_results(proc.stdout))
+
+
+def parse_results(stdout: str) -> list[dict]:
+    """The tool prints 'embedding failed: ...' on stdout before the JSON when it falls back."""
+    start = stdout.find("[")
+    if start < 0:
+        return []
     try:
-        results = json.loads(proc.stdout or "[]")
+        results = json.loads(stdout[start:])
     except json.JSONDecodeError:
-        results = []
-    return filter_results(results)
+        return []
+    return results if isinstance(results, list) else []
+
+
+def merge_results(per_query: list[tuple[str, list[dict]]]) -> list[dict]:
+    """Union results across queries, one row per page, best distance kept, matching terms listed."""
+    merged: dict[str, dict] = {}
+    for query, results in per_query:
+        for r in results:
+            row = merged.setdefault(r["filename"], {**r, "matched": []})
+            row["matched"].append(query)
+            d_new, d_old = r.get("distance"), row.get("distance")
+            if isinstance(d_new, (int, float)) and (not isinstance(d_old, (int, float)) or d_new < d_old):
+                row["distance"] = d_new
+    rows = list(merged.values())
+    rows.sort(key=lambda r: (-len(r["matched"]), r["distance"] if isinstance(r.get("distance"), (int, float)) else 1.0, r["filename"]))
+    return rows
 
 
 def cmd_search(args: argparse.Namespace) -> None:
     require_field()
-    results = search_json(args.query)
+    queries = args.query
+    results = merge_results([(q, search_json(q)) for q in queries]) if len(queries) > 1 else search_json(queries[0])
     if args.json:
         for r in results:
             r["signals"] = [{"signal": sig, "reason": reason} for sig, reason in suspicion(page_frontmatter(r["filename"]))]
@@ -359,7 +383,8 @@ def cmd_search(args: argparse.Namespace) -> None:
     for r in results:
         # refs and age only: a git lookup and a date compare. Checks run in doubt.
         signals = suspicion(page_frontmatter(r["filename"]))
-        print(f"{r['filename']}: {r.get('summary', '')} ({distance_text(r)}){marker(signals)}")
+        via = f" [{', '.join(r['matched'])}]" if len(queries) > 1 and r.get("matched") else ""
+        print(f"{r['filename']}: {r.get('summary', '')} ({distance_text(r)}){via}{marker(signals)}")
 
 
 def cmd_pull(args: argparse.Namespace) -> None:
@@ -955,8 +980,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="memory", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("search", help="ranked pages for a query")
-    p.add_argument("query")
+    p = sub.add_parser("search", help="ranked pages for one or more queries; several terms are searched separately and merged")
+    p.add_argument("query", nargs="+")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_search)
 
