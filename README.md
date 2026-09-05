@@ -133,23 +133,16 @@ Semantic search handles questions; string search handles identifiers; a
 page both of them found is the one to trust. Search engines call this
 combination hybrid search.
 
-**String search alone** is the fallback for a machine where ollama cannot
-run or be reached. Choose it with `memory setup --substring`. The agent
-then searches the terms a page would contain rather than the question,
-several at once, tries topics from `.memory/index.md`, stems, and
-synonyms, reads the top pages instead of trusting summaries, and tells
-you when a search came up empty. Memory still works, less well.
+**Without ollama.** On a machine that cannot run or reach ollama, run
+`memory setup --substring` and only string search runs. The agent
+searches for the terms a page would contain instead of the question, and
+says when it finds nothing. Memory still works, less well.
 
-**The index.** Semantic search reads a vector index, one SQLite file per
-field, that memoryfield-tool builds from the pages. It lives in the
-machine's cache, `~/.cache/memoryfield-tool/indexes/` on Linux and
-`~/Library/Caches/memoryfield-tool/indexes/` on macOS, never in the
-repository. The pages in `.memory/` are the only source of truth. After
-every `memory write`, `verify`, or `delete` the wrapper rebuilds the index
-before returning, embedding only pages whose content changed. A fresh
-clone has no index; the first `memory index` or the first write builds it
-from scratch in a few seconds. Deleting the cache loses nothing. In
-string mode no index exists and no embedding host is ever contacted.
+**The index.** Semantic search uses an index that memoryfield-tool builds
+from the pages and keeps in the machine's cache directory, never in the
+repository. The wrapper updates it after every write and rebuilds it from
+scratch on a fresh clone, so it can be deleted at any time without losing
+anything. The pages in `.memory/` are the only source of truth.
 
 ## Requirements
 
