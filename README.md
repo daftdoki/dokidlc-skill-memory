@@ -110,58 +110,33 @@ generated topic list.
 
 ## How search works
 
-Two kinds of search run together on every query, and each covers what the
-other misses. If the terms are new to you: string search looks for the
-exact characters you typed, the way a text editor's find does. Semantic
-search turns your query and every page into numbers that stand for
-meaning and returns the pages whose meaning is closest, whether or not
-they share a word with the query.
+Every query runs two searches and fuses the results. Semantic search
+matches meaning: "why does install fail on a mac" finds the page about a
+missing wheel though they share no words. It needs an embedding model,
+`nomic-embed-text`, served by ollama here or on a reachable host, and it
+is weak on exact identifiers like "pysqlite3-binary" or "I113", which
+embed near other technical text. String search matches exact text: the
+wrapper pulls the distinctive terms from your query and looks for them in
+every page's name, title, summary, and body, with no model and no index.
+It is exact on identifiers and blind to paraphrase.
 
-**Semantic search** finds paraphrase. "Why does install fail on a mac"
-finds the page about a missing wheel even though it shares no words with
-the query. It needs an embedding model, `nomic-embed-text`, served by
-ollama on this machine or on a host you can reach, costs about half a
-second per search, and ranks by a distance score, so a page can appear
-that is merely near the subject. Its weakness is exact identifiers: an
-embedding of "pysqlite3-binary", "I113", or "port 30303" lands near other
-technical-looking text, so the one page that names it can rank below a
-related one or fall under the cutoff.
-
-**String search** is exact on precisely those tokens and blind to
-everything else. The wrapper pulls the distinctive terms out of your
-query, tool names, file names, error text, identifiers kept whole and
-split into their parts, and matches them against every page's name,
-title, summary, and body. No embedding call, no index; a local loop over
-a few dozen files.
-
-**Together.** The results are fused. A page found by both paths ranks
-first, then semantic hits by distance, then string-only hits by how many
-terms matched and whether they matched the title or only the body. Every
-line says how it was found:
+Fused, a page found by both ranks first, then semantic hits by distance,
+then string-only hits. Each line says how it was found:
 
 ```
-pysqlite3-install-override.md: Why memoryfield-tool needs a uv overrides file ... (distance 0.226; via semantic, install, pysqlite3-binary, pysqlite3)
-memoryfield-tool-pin-and-bump.md: The tool installs from a pinned commit ...   (distance 0.430; via semantic, install)
+pysqlite3-install-override.md: Why memoryfield-tool needs a uv overrides file ... (distance 0.226; via semantic, install, pysqlite3-binary)
 ```
 
-So a query with an identifier in it is anchored by the string hit, a
-query phrased as a question is carried by the semantic one, and the case
-where both agree is the one you can trust. This is the same idea search
-engines call hybrid search, done with a loop instead of a second index
-because the field is small.
+A question is carried by the semantic path, an identifier is anchored by
+the string path, and agreement is what you trust. Search engines call
+this hybrid search; here it is a loop over a few dozen files.
 
-**String search alone** is the fallback, for an environment where ollama
-cannot run and cannot be reached: a locked-down container, a host with no
-network, a machine you cannot install on. Choose it with
-`memory setup --substring`; switch back with `memory setup --local` or
-`memory setup --host URL`. In that mode the agent does not send a
-question as typed. It searches the terms a matching page would contain,
-several at once with results merged, reads the topic list in
-`.memory/index.md` for the nearest topics when nothing comes back, tries
-stems and synonyms, reads the top pages rather than trusting summaries,
-and tells you when a search came up empty so you know the limit is the
-mode. Memory still works, less well. If a semantic host stops answering
-mid-session, search behaves the same way for that query and says so.
+**String search alone** is the fallback for a machine where ollama cannot
+run or be reached. Choose it with `memory setup --substring`. The agent
+then searches the terms a page would contain rather than the question,
+several at once, tries topics from `.memory/index.md`, stems, and
+synonyms, reads the top pages instead of trusting summaries, and tells
+you when a search came up empty. Memory still works, less well.
 
 **The index.** Semantic search reads a vector index, one SQLite file per
 field, that memoryfield-tool builds from the pages. It lives in the
