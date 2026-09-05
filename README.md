@@ -80,18 +80,18 @@ memory cost                                         bytes and tokens of index an
 
 ### Memory pages
 
-The agent writes pages with `memory write`; you rarely will. Each page is
-one topic, under 8KB, with frontmatter the search and the trust rules read:
+The agent writes pages. You rarely will. Each page is one topic, under
+8KB, with frontmatter that search and the trust rules read:
 
 ```
 ---
 title: A silent OLLAMA_HOST hangs the tool
-summary: Why the wrapper probes the host with a two-second timeout   # what search prints
-topics: [ollama, memoryfield-tool]                                    # feed the index
-kind: finding                # environment, procedure, finding, or decision
-refs: [docs/research.md@61b6f00]   # a file at a commit; if it changes, the page is suspect
-check: curl -s localhost:11434 >/dev/null   # optional; if it fails, the page is suspect
-verified: '2026-09-04T22:42:52Z'            # when the agent last re-confirmed it
+summary: Why the wrapper probes the host with a two-second timeout
+topics: [ollama, memoryfield-tool]
+kind: finding
+refs: [docs/research.md@61b6f00]
+check: curl -s localhost:11434 >/dev/null
+verified: '2026-09-04T22:42:52Z'
 ---
 The tool hangs about 75 seconds on a host that accepts a connection and
 goes silent, because the client has no timeout.
@@ -101,12 +101,21 @@ goes silent, because the client has no timeout.
 - timed against /api/embed, 2026-09-01
 ```
 
-`kind` sets how soon an unverified page earns a "glance" hint in search:
-30 days for `environment`, 90 for `procedure`, 180 for `finding`, never for
-`decision`. A glance is a suggestion to skim; only a changed ref, a failed
-check, or a contradiction makes a page suspect. `index.md` is the one page
-the agent does not write: its top half is yours, its bottom half is a
-generated topic list.
+| Key | Meaning |
+|---|---|
+| `title` | What the page is about. |
+| `summary` | One sentence. Search shows this line. |
+| `topics` | One or two tags. They make the topic list in `index.md`. |
+| `kind` | `environment`, `procedure`, `finding`, or `decision`. Sets when an old page gets a "glance" hint: 30, 90, 180 days, or never. |
+| `refs` | Files this page cites, each at a commit. If the file changes, the page becomes suspect. |
+| `check` | A read-only command. If it fails, the page becomes suspect. |
+| `verified` | When the agent last confirmed the page is still true. |
+
+Every page ends with a Sources section. It says where the fact came from,
+so a later session can check it. A glance hint means "skim if this
+matters to you". Only a changed ref, a failed check, or a contradiction
+makes a page suspect. `index.md` is the one page the agent does not
+write: its top half is yours, its bottom half is a generated topic list.
 
 ## How search works
 
