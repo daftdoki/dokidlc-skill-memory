@@ -78,7 +78,7 @@ memory delete stale-page.md
 memory cost                                         bytes and tokens of index and search
 ```
 
-### What a page looks like
+### Memory pages
 
 The agent writes pages with `memory write`; you rarely will. Each page is
 one topic, under 8KB, with frontmatter the search and the trust rules read:
