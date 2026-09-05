@@ -120,16 +120,18 @@ wrapper pulls the distinctive terms from your query and looks for them in
 every page's name, title, summary, and body, with no model and no index.
 It is exact on identifiers and blind to paraphrase.
 
-Fused, a page found by both ranks first, then semantic hits by distance,
-then string-only hits. Each line says how it was found:
+The two result lists are merged into one. Pages that both searches found
+come first, then the rest of the semantic results in order of distance,
+then pages only the string search found. Each line shows which search
+found it:
 
 ```
 pysqlite3-install-override.md: Why memoryfield-tool needs a uv overrides file ... (distance 0.226; via semantic, install, pysqlite3-binary)
 ```
 
-A question is carried by the semantic path, an identifier is anchored by
-the string path, and agreement is what you trust. Search engines call
-this hybrid search; here it is a loop over a few dozen files.
+Semantic search handles questions; string search handles identifiers; a
+page both of them found is the one to trust. Search engines call this
+combination hybrid search.
 
 **String search alone** is the fallback for a machine where ollama cannot
 run or be reached. Choose it with `memory setup --substring`. The agent
