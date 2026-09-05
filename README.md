@@ -110,39 +110,43 @@ generated topic list.
 
 ## How search works
 
-Every query runs two searches and fuses the results. Semantic search
-matches meaning: "why does install fail on a mac" finds the page about a
-missing wheel though they share no words. It needs an embedding model,
-`nomic-embed-text`, served by ollama here or on a reachable host, and it
-is weak on exact identifiers like "pysqlite3-binary" or "I113", which
-embed near other technical text. String search matches exact text: the
-wrapper pulls the distinctive terms from your query and looks for them in
-every page's name, title, summary, and body, with no model and no index.
-It is exact on identifiers and blind to paraphrase.
+Each query runs two searches. Then the wrapper merges the results.
 
-The two result lists are merged into one. Pages that both searches found
-come first, then the rest of the semantic results in order of distance,
-then pages only the string search found. Each line shows which search
-found it:
+Semantic search matches meaning. The query "why does install fail on a
+mac" finds the page about a missing wheel. The two share no words.
+Semantic search needs an embedding model, `nomic-embed-text`. Ollama
+serves the model on this machine or on a host you can reach. Semantic
+search is weak on exact identifiers such as "pysqlite3-binary" or
+"I113".
+
+String search matches exact text. The wrapper takes the important words
+from your query. It looks for them in the name, title, summary, and body
+of each page. String search needs no model and no index. It finds
+identifiers. It does not find paraphrase.
+
+The wrapper merges the two result lists. Pages that both searches found
+come first. Then come the other semantic results, nearest first. Then
+come the pages that only string search found. Each line shows which
+search found the page:
 
 ```
 pysqlite3-install-override.md: Why memoryfield-tool needs a uv overrides file ... (distance 0.226; via semantic, install, pysqlite3-binary)
 ```
 
-Semantic search handles questions; string search handles identifiers; a
-page both of them found is the one to trust. Search engines call this
-combination hybrid search.
+Semantic search answers questions. String search finds identifiers. A
+page that both searches found is the page to trust.
 
-**Without ollama.** On a machine that cannot run or reach ollama, run
-`memory setup --substring` and only string search runs. The agent
-searches for the terms a page would contain instead of the question, and
-says when it finds nothing. Memory still works, less well.
+**Without ollama.** Some machines cannot run or reach ollama. On such a
+machine, run `memory setup --substring`. Then only string search runs.
+The agent searches for the words a page contains, not for the question.
+It tells you when it finds nothing. Memory works, but not as well.
 
-**The index.** Semantic search uses an index that memoryfield-tool builds
-from the pages and keeps in the machine's cache directory, never in the
-repository. The wrapper updates it after every write and rebuilds it from
-scratch on a fresh clone, so it can be deleted at any time without losing
-anything. The pages in `.memory/` are the only source of truth.
+**The index.** Semantic search reads an index. memoryfield-tool builds
+the index from the pages and keeps it in the cache directory of the
+machine. The index is not in the repository. The wrapper updates the
+index after each write. On a fresh clone, the wrapper builds the index
+again. You can delete the index at any time and lose nothing. The pages
+in `.memory/` are the only source of truth.
 
 ## Requirements
 
