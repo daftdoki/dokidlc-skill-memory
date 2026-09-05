@@ -136,12 +136,16 @@ pysqlite3-install-override.md: Why memoryfield-tool needs a uv overrides file ..
 Semantic search answers questions. String search finds identifiers. A
 page that both searches found is the page to trust.
 
-**Without ollama.** Some machines cannot run or reach ollama. On such a
+### Without ollama
+
+Some machines cannot run or reach ollama. On such a
 machine, run `memory setup --substring`. Then only string search runs.
 The agent searches for the words a page contains, not for the question.
 It tells you when it finds nothing. Memory works, but not as well.
 
-**The index.** Semantic search reads an index. memoryfield-tool builds
+### Semantic index
+
+Semantic search reads an index. memoryfield-tool builds
 the index from the pages and keeps it in the cache directory of the
 machine. The index is not in the repository. The wrapper updates the
 index after each write. On a fresh clone, the wrapper builds the index
