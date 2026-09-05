@@ -107,6 +107,58 @@ check, or a contradiction makes a page suspect. `index.md` is the one page
 the agent does not write: its top half is yours, its bottom half is a
 generated topic list.
 
+## Two ways to search
+
+If the terms are new to you: string search looks for the exact characters
+you typed, the way a text editor's find does. Semantic search turns your
+query and every page into numbers that stand for meaning and returns the
+pages whose meaning is closest, whether or not they share a word with the
+query.
+
+**Semantic search** is the default. You search the way you would ask a
+colleague: "why does install fail on a mac" finds the page about a
+missing wheel even though it shares no words with the query. It needs an
+embedding model, `nomic-embed-text`, served by ollama on this machine or
+on a host you can reach. It costs about half a second per search on Apple
+Silicon and a little more over the network, and results are ranked by a
+distance score rather than an exact hit, so a page can appear that is
+merely near the subject.
+
+**String search** is the fallback, for an environment where ollama cannot
+run and cannot be reached: a locked-down container, a host with no
+network, a machine you cannot install on. It needs nothing. A query
+matches pages whose filename, title, or summary contain the text you
+typed, so you search the way you would grep, with the exact term you
+expect to be there: "pysqlite3" finds the missing-wheel page, "why does
+install fail on a mac" finds nothing. Memory still works, less well.
+
+**How the agent copes in string mode.** It does not send the question
+as typed. It pulls out the terms a matching page would have to contain,
+tool names, file names, error text, the one noun that matters, and
+searches them in one call, `memory search install pysqlite3 macos wheel`;
+each term is searched on its own and the results are merged, with pages
+matching more terms first and the matching terms shown beside each line.
+If that finds nothing it reads the topic list in `.memory/index.md` and
+searches the nearest topics, then tries shorter stems and synonyms. It
+reads the top pages rather than trusting the summaries, since a string
+hit says less about relevance than a semantic one, and it tells you when
+a search came up empty in string mode so you know the limit is the mode.
+Choose it with `memory setup --substring`; switch back with
+`memory setup --local` or `memory setup --host URL`. If a semantic host
+stops answering, search falls back to string matching for that query and
+says so.
+
+**The index.** Semantic search reads a vector index, one SQLite file per
+field, that memoryfield-tool builds from the pages. It lives in the
+machine's cache, `~/.cache/memoryfield-tool/indexes/` on Linux and
+`~/Library/Caches/memoryfield-tool/indexes/` on macOS, never in the
+repository. The pages in `.memory/` are the only source of truth. After
+every `memory write`, `verify`, or `delete` the wrapper rebuilds the index
+before returning, embedding only pages whose content changed. A fresh
+clone has no index; the first `memory index` or the first write builds it
+from scratch in a few seconds. Deleting the cache loses nothing. In
+string mode no index exists and no embedding host is ever contacted.
+
 ## Requirements
 
 - Claude Code 2.1.195 or later
@@ -155,49 +207,6 @@ The plugin still needs the `claude plugin install` line once per machine.
 
 Manual install, without the marketplace: clone this repository and start
 Claude Code with `claude --plugin-dir /path/to/dokidlc-skill-memory`.
-
-## Two ways to search
-
-If the terms are new to you: string search looks for the exact characters
-you typed, the way a text editor's find does. Semantic search turns your
-query and every page into numbers that stand for meaning and returns the
-pages whose meaning is closest, whether or not they share a word with the
-query.
-
-**Semantic search** is the default. You search the way you would ask a
-colleague: "why does install fail on a mac" finds the page about a
-missing wheel even though it shares no words with the query. It needs an
-embedding model, `nomic-embed-text`, served by ollama on this machine or
-on a host you can reach. It costs about half a second per search on Apple
-Silicon and a little more over the network, and results are ranked by a
-distance score rather than an exact hit, so a page can appear that is
-merely near the subject.
-
-**String search** is the fallback, for an environment where ollama cannot
-run and cannot be reached: a locked-down container, a host with no
-network, a machine you cannot install on. It needs nothing. A query
-matches pages whose filename, title, or summary contain the text you
-typed, so you search the way you would grep, with the exact term you
-expect to be there: "pysqlite3" finds the missing-wheel page, "why does
-install fail on a mac" finds nothing. The agent knows this: in string
-mode it breaks a question into its distinctive terms, searches them
-together with results merged, and tries stems and synonyms before giving
-up. Memory still works, less well.
-Choose it with `memory setup --substring`; switch back with
-`memory setup --local` or `memory setup --host URL`. If a semantic host
-stops answering, search falls back to string matching for that query and
-says so.
-
-**The index.** Semantic search reads a vector index, one SQLite file per
-field, that memoryfield-tool builds from the pages. It lives in the
-machine's cache, `~/.cache/memoryfield-tool/indexes/` on Linux and
-`~/Library/Caches/memoryfield-tool/indexes/` on macOS, never in the
-repository. The pages in `.memory/` are the only source of truth. After
-every `memory write`, `verify`, or `delete` the wrapper rebuilds the index
-before returning, embedding only pages whose content changed. A fresh
-clone has no index; the first `memory index` or the first write builds it
-from scratch in a few seconds. Deleting the cache loses nothing. In
-string mode no index exists and no embedding host is ever contacted.
 
 ## Built on memoryfields
 
