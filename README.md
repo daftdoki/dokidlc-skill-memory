@@ -125,9 +125,9 @@ claude plugin install memory@dokidlc
 ```
 
 Then start a session in a repository and say "set up memory." The agent
-asks whether the embedding model runs on this machine or on a remote
-host, or, if ollama cannot run where you are, sets string search as a
-fallback. It then runs the setup, creates `.memory/` with a short paragraph in
+asks whether you want semantic search, the default, or the string search
+fallback for a machine where ollama cannot run, and for semantic search
+whether the embedding model runs on this machine or on a remote host. It then runs the setup, creates `.memory/` with a short paragraph in
 `CLAUDE.md`, and installs what is missing: memoryfield-tool at the pinned
 commit, and for a local model on macOS, ollama and the model itself. On
 Linux it tells you the one ollama command to run. It stages `.memory/` and

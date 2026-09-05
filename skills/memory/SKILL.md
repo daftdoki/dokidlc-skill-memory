@@ -45,14 +45,16 @@ The creator never has to run a command. When the session-start line says
 memory is not set up, or the creator asks for memory, hold a short
 conversation and then run the commands yourself.
 
-1. Ask whether the embedding model should run through ollama on this
-   machine or on a remote host, and if remote, its address. Semantic
-   search is the default and this is its only question.
-2. Only if the creator says ollama cannot run or be reached here: offer
-   string search as the fallback. Say plainly that it matches exact text
-   only, so "why does install fail on a mac" finds nothing where semantic
-   search finds the missing-wheel page, and that memory still works, less
-   well.
+1. Ask, in one question: "Memory searches by meaning by default, which
+   needs ollama with an embedding model on this machine or on a host you
+   can reach. If ollama cannot run or be reached here, there is a string
+   search fallback that matches exact text only and works less well. Which
+   do you want?" Recommend semantic unless they say ollama is out of
+   reach. If they ask what the difference is: semantic search finds the
+   missing-wheel page from "why does install fail on a mac"; string
+   search needs "pysqlite3".
+2. If semantic: ask whether embeddings should come from ollama on this
+   machine or from a remote host, and if remote, its address.
 3. Ask whether to create `.memory/` in this repository, if it has none.
 
 Then run, in order, showing each command first:
