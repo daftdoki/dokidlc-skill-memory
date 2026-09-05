@@ -130,7 +130,8 @@ write: its top half is yours, its bottom half is a generated topic list.
 
 ## How search works
 
-Each query runs two searches. Then the wrapper merges the results.
+Each query runs a string and semantic search and the wrapper merges the
+results.
 
 Semantic search matches meaning. The query "why does install fail on a
 mac" finds the page about a missing wheel. The two share no words.
