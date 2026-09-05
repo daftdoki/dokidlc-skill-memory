@@ -17,7 +17,8 @@ memory search term1 term2 term3           several terms, searched separately, me
 memory pull "what am I looking for"       full text of the matching pages
 memory read PAGE.md                       one page
 memory doubt [--network]                  pages with evidence they may be wrong; --network checks URL refs, with permission
-memory verify PAGE.md                     you re-confirmed it; record that and refresh its refs
+memory verify PAGE.md                     you re-confirmed it; re-run its check, refresh its refs
+memory approve PAGE.md                    run a page's check once and approve it here (ask first)
 memory delete PAGE.md
 memory setup [--local|--host URL|--substring]   embedding host, or the string fallback; once per machine
 memory doctor --fix                       install or repair prerequisites
@@ -134,8 +135,9 @@ Write at these moments, without being asked:
 - when a stage of a quest closes: one page per finding you established
   on your own during research, design, or plan, each citing the stage
   document with `--ref`
-- when a hook says compaction is next, or that this session hit failures
-  and wrote nothing: write what a future session would otherwise re-derive
+- when a hook says a command worked after failing twice, or that context
+  was just compacted and nothing was written: write what a future session
+  would otherwise re-derive, or say there is nothing worth a page
 - when the creator says "remember"
 
 Four rules keep the field worth searching:
@@ -202,8 +204,11 @@ age. `doubt` also runs each page's `--check` command and marks failures.
 - Run `memory doubt` when the session-start line names a suspect, after a
   `git pull`, and before you close a quest stage.
 - A `--check` must be read-only and must pass when you write it; the
-  wrapper refuses one that does not. Checks run only from `doubt` and
-  `verify`, never from hooks.
+  wrapper refuses one that does not. Checks run only from `doubt`,
+  `verify`, and `approve`, never from hooks.
+- A check that came with a clone is not approved on this machine, and
+  `doubt` lists it instead of running it. Show the creator the command
+  and ask; on yes, run `memory approve PAGE`.
 
 ## References
 

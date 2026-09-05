@@ -77,7 +77,8 @@ memory search install pysqlite3 wheel               several queries at once, res
 memory pull "embedding host"                        full text of matching pages
 memory read ollama-host-silent-hang.md
 memory doubt                                        pages with evidence they may be wrong
-memory verify ollama-host-silent-hang.md            re-confirmed; refresh its refs
+memory verify ollama-host-silent-hang.md            re-confirmed; re-run its check, refresh its refs
+memory approve ollama-host-silent-hang.md           run a page's check once and approve it on this machine
 memory delete stale-page.md
 memory cost                                         bytes and tokens of index and search
 memory stats [--days N]                             searches, reads after a hit, writes, from a local log
@@ -85,35 +86,17 @@ memory stats [--days N]                             searches, reads after a hit,
 
 ### Hooks
 
-The plugin registers these hooks. All of them fail open and none runs a
+The plugin registers these hooks. All of them fail open. None runs a
 page's check command.
 
 | When | What the agent sees |
 |---|---|
-| Session start, and each subagent start | One line: page count, search mode, top topics, any page whose cited file changed. |
-| Every prompt you send | If pages match, one line naming up to three with the `memory read` command for each. Short prompts and one-word answers are skipped. At most 400 bytes. |
-| A shell command fails | The same line, searched with the command and its error. |
-| Context is about to be compacted | A reminder to write what was learned, only if this session wrote nothing. |
-| The agent is about to stop | Once per session, only if two or more commands failed and nothing was written: a prompt to write the fix first. |
+| Session start, and each subagent start | One line: page count, search mode, top topics, any page whose cited file changed. After a compaction, a reminder to write if the session has written nothing. |
+| Every prompt you send | If pages match, one line naming up to three with the `memory read` command for each. Short prompts, one-word answers, and slash commands are skipped. At most 400 bytes. |
+| A shell command fails | The same line, searched with the error text. Silent when the error says nothing but an exit code. |
+| A shell command works after failing twice | A reminder to write the fix as a procedure page, once per command. |
+| The agent is about to stop | Once per session, only when a command failed twice then worked and nothing was written: write it, or say there is nothing worth a page. |
 | The agent runs `memory doubt --network` | Claude Code asks you to approve it. |
-
-### Memory pages
-
-The agent writes pages. You rarely will. Each page is one topic, under
-8KB, with frontmatter that search and the trust rules read:
-
-```
----
-title: A silent OLLAMA_HOST hangs the tool
-summary: Why the wrapper probes the host with a two-second timeout
-topics: [ollama, memoryfield-tool]
-kind: finding
-refs: [docs/research.md@61b6f00]
-check: curl -s localhost:11434 >/dev/null
-verified: '2026-09-04T22:42:52Z'
----
-The tool hangs about 75 seconds on a host that accepts a connection and
-goes silent, because the client has no timeout.
 
 ## Sources
 
@@ -127,11 +110,16 @@ goes silent, because the client has no timeout.
 | `topics` | One or two tags. They make the topic list in `index.md`. |
 | `kind` | `environment`, `procedure`, `finding`, or `decision`. Says how fast the page can go stale. |
 | `refs` | Files this page cites, each at a commit, or URLs. If a file changes, the page becomes suspect. URLs are checked only when you allow it. |
-| `check` | A read-only command. If it fails, the page becomes suspect. |
+| `check` | A read-only command. If it fails, the page becomes suspect. A check runs on a machine only after that machine approved it. |
 | `verified` | When the agent last confirmed the page is still true. |
 
 Every page ends with a Sources section. It says where the fact came from,
 so a later session can check it.
+
+A check written on this machine is approved here when it is written. A
+check that arrived with a clone runs only after the agent asks you and
+runs `memory approve` for that page, so a page from someone else cannot
+run a command on your machine unasked.
 
 URLs in `refs` are never contacted by search. The agent checks them only
 when you say it may. It asks first, and Claude Code prompts you to

@@ -7,7 +7,7 @@
 bin/memory                   the command; Python under uv run --script, PyYAML inline
 memory.pin                   memoryfield-tool commit and the embedding model
 skills/memory/SKILL.md       the agent's rules
-hooks/hooks.json             SessionStart: memory doctor --brief
+hooks/hooks.json             SessionStart and SubagentStart: doctor --brief; UserPromptSubmit and PostToolUse(Failure): recall; Stop: nudge; PreToolUse: guard
 tests/                       pytest; nothing needs ollama or memoryfield-tool
 ```
 
@@ -76,3 +76,19 @@ exit 2. Bump `FORMAT` only with a migration.
 
 Commit to main, let CI pass, then change the `sha` for `memory` in
 `dokidlc-plugins/.claude-plugin/marketplace.json`.
+
+## Hook channels
+
+Only SessionStart and UserPromptSubmit inject plain stdout. SubagentStart,
+PostToolUse, PostToolUseFailure, and Stop need
+`hookSpecificOutput.additionalContext`; PreCompact has no context channel
+at all, so the compaction reminder rides on SessionStart with
+`source: compact`. `doctor --brief` reads `hook_event_name` from stdin to
+pick the framing. Host probes are cached in the state dir for ten
+minutes so a dead host costs one probe, not one per prompt.
+
+## Approved checks
+
+`write` and `verify` record the sha256 of a page's check in
+`~/.local/state/dokidlc-memory/checks.json`. `doubt` runs only approved
+checks and lists the rest. `memory approve PAGE` runs one and records it.

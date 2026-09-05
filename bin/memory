@@ -18,6 +18,7 @@ Usage:
   memory delete PAGE
   memory verify PAGE           record that the page was re-confirmed
   memory doubt [--all]         pages with evidence they may be wrong
+  memory approve PAGE          run a page's check once and approve it on this machine
   memory index                 full reindex and index.md regeneration
   memory cost                  bytes and tokens of index.md and a search
   memory doctor [--fix|--brief] check or install prerequisites
@@ -291,8 +292,31 @@ def normalize_host(raw: str | None) -> str:
     return value
 
 
+PROBE_TTL = 600
+
+
 def host_answers(base_url: str, timeout: float = HOST_TIMEOUT) -> bool:
-    """One GET with a short timeout. A silent host returns False, never hangs."""
+    """One GET with a short timeout, cached per host for PROBE_TTL seconds. A silent host returns False, never hangs."""
+    cache = state_dir() / "hosts.json"
+    now = datetime.now(UTC).timestamp()
+    try:
+        data = json.loads(cache.read_text()) if cache.is_file() else {}
+        hit = data.get(base_url)
+        if hit and now - float(hit.get("ts", 0)) < PROBE_TTL:
+            return bool(hit.get("answers"))
+    except (OSError, ValueError):
+        data = {}
+    answers = _probe(base_url, timeout)
+    try:
+        state_dir().mkdir(parents=True, exist_ok=True)
+        data[base_url] = {"answers": answers, "ts": now}
+        cache.write_text(json.dumps(data))
+    except OSError:
+        pass
+    return answers
+
+
+def _probe(base_url: str, timeout: float) -> bool:
     try:
         with urllib.request.urlopen(base_url + "/", timeout=timeout) as resp:
             return resp.status == 200
@@ -443,7 +467,9 @@ def query_terms(query: str) -> list[str]:
     """The tokens a matching page would have to contain: identifiers kept whole, and their parts."""
     terms: list[str] = []
     for tok in TERM_RE.findall(query.lower()):
-        for t in [tok] + (re.split(r"[._-]", tok) if any(c in tok for c in "._-") else []):
+        # an identifier with digits (an IP, a version, a commit) stays whole; hyphenated names also yield their parts
+        parts = [tok] + (re.split(r"[._-]", tok) if any(c in tok for c in "._-") and not any(ch.isdigit() for ch in tok) else [])
+        for t in parts:
             if len(t) >= 3 and t not in STOPWORDS and t not in terms:
                 terms.append(t)
     return terms
@@ -452,14 +478,22 @@ def query_terms(query: str) -> list[str]:
 def string_search(terms: list[str]) -> list[dict]:
     """Exact-text match over filename, title, and summary. Local, no embedding call."""
     rows = []
-    for page in list_pages():
+    pages = list_pages()
+    texts = []
+    for page in pages:
         fm, body = parse_page(page.read_text())
         head = f"{page.name} {fm.get('title', '')} {fm.get('summary', '')}".lower()
-        text = head + " " + body.lower()
+        texts.append((page, fm, head, head + " " + body.lower()))
+    # a term that appears in more than a third of pages says nothing about any one of them
+    # a term in more than a third of pages, and in more than three, says nothing about any one of them
+    common = {t for t in terms if pages and sum(t in text for _, _, _, text in texts) > max(3, len(pages) / 3)}
+    for page, fm, head, text in texts:
         hits = [t for t in terms if t in text]
         if hits:
-            # a hit in the name, title, or summary counts more than one buried in the body
-            rows.append({"filename": page.name, "summary": fm.get("summary", ""), "distance": None, "matched": hits, "head_hits": sum(t in head for t in hits)})
+            # a head term must match as a whole word, so "add" does not hit "adds" and "lets" does not hit "lets the tool run"
+            head_terms = [t for t in hits if re.search(r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9])", head)]
+            rows.append({"filename": page.name, "summary": fm.get("summary", ""), "distance": None, "matched": hits,
+                         "head_hits": len(head_terms), "head_terms": head_terms, "rare_terms": [t for t in hits if t not in common]})
     return rows
 
 
@@ -478,6 +512,7 @@ def hybrid_search(query: str) -> list[dict]:
         row = merged.setdefault(r["filename"], {**r, "via": [], "hits": 0})
         row["via"] = row["via"] + r["matched"]
         row["hits"] = len(r["matched"]) + r.get("head_hits", 0)
+        row["head_terms"] = r.get("head_terms", []); row["rare_terms"] = r.get("rare_terms", [])
     rows = list(merged.values())
 
     def key(r: dict):
@@ -506,30 +541,41 @@ def merge_results(per_query: list[tuple[str, list[dict]]]) -> list[dict]:
 
 
 RECALL_MIN_PROMPT = 40
-RECALL_MAX_DISTANCE = 0.40
+RECALL_SEMANTIC_ONLY = 0.28      # a semantic hit alone must be this close
+RECALL_BOTH = 0.34               # a semantic hit backed by a strong term must be this close
 RECALL_MAX_BYTES = 400
-IDENTIFIER_RE = re.compile(r"[0-9._-]|^.{7,}$")
+IDENTIFIER_RE = re.compile(r"[0-9._-]")
+ANSWER_RE = re.compile(r"^(yes|yeah|no|nope|ok|okay|agreed?|go( ahead)?|sure|done|thanks?|correct)\b", re.I)
 
 
 def recall_worthy(prompt: str) -> bool:
-    """Skip short answers, interview replies, and slash commands."""
+    """Skip short answers, one-word replies, interview replies, and slash commands."""
     p = prompt.strip()
-    return len(p) >= RECALL_MIN_PROMPT and not re.match(r"^\d+\s*[>.)]", p) and not p.startswith("/")
+    return len(p) >= RECALL_MIN_PROMPT and not re.match(r"^\d+\s*[>.)]", p) and not p.startswith("/") and not ANSWER_RE.match(p)
 
 
 def recall_filter(rows: list[dict]) -> list[dict]:
-    """Keep pages found by both paths, close semantic hits, or string hits on an identifier."""
+    """Keep a page only on evidence that survives a busy field.
+
+    Semantic and a rare term, close enough; or semantic alone, very close; or a
+    string hit on an identifier (digits or punctuation) or in the page's own
+    name, title, or summary. Common terms, ones in over a third of pages, count
+    for nothing.
+    """
     keep = []
     for r in rows:
         via = r.get("via") or []
         sem = "semantic" in via
-        terms = [v for v in via if v != "semantic"]
+        rare = r.get("rare_terms") or []
+        head = r.get("head_terms") or []
         d = r.get("distance") if isinstance(r.get("distance"), (int, float)) else None
-        if sem and terms:
+        # an identifier, or a rare word of five letters or more that names the page itself
+        strong_term = any(IDENTIFIER_RE.search(t) for t in rare) or any(t in rare and len(t) >= 5 for t in head)
+        if sem and strong_term and d is not None and d <= RECALL_BOTH:
             keep.append(r)
-        elif sem and d is not None and d <= RECALL_MAX_DISTANCE:
+        elif sem and d is not None and d <= RECALL_SEMANTIC_ONLY:
             keep.append(r)
-        elif terms and any(IDENTIFIER_RE.search(t) for t in terms):
+        elif not sem and strong_term:
             keep.append(r)
     return keep[:3]
 
@@ -559,26 +605,70 @@ def recall_line(rows: list[dict]) -> str:
     return render(parts)
 
 
-def cmd_recall(args: argparse.Namespace) -> None:
-    """Hook entry. Reads the hook JSON on stdin, prints at most one line. Never fails the hook."""
+def read_event() -> dict:
+    """The hook payload on stdin, if any. Adopts its session id for the log."""
     try:
         event = json.load(sys.stdin) if not sys.stdin.isatty() else {}
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, ValueError, OSError):
         event = {}
+    if isinstance(event, dict) and event.get("session_id"):
+        os.environ["CLAUDE_CODE_SESSION_ID"] = str(event["session_id"])
+    return event if isinstance(event, dict) else {}
+
+
+def first_token(command: str) -> str:
+    toks = command.split()
+    return toks[0] if toks else ""
+
+
+RECOVERY_NUDGE = "memory: `{cmd}` failed {n} times this session before it worked. If the fix was not obvious from a file in the repository, write it now: one `memory write` page, kind procedure, with the command that worked and its Sources."
+
+
+def recovered_commands() -> list[tuple[str, int]]:
+    """Commands that failed at least twice this session and then succeeded, not yet nudged and not yet written about."""
+    rows = read_log(session=session_id())
+    if any(r["cmd"] == "write" for r in rows):
+        return []
+    fails: dict[str, int] = {}
+    out = []
+    nudged = {r.get("command") for r in rows if r["cmd"] == "nudged"}
+    for r in rows:
+        c = r.get("command")
+        if r["cmd"] == "failure" and c:
+            fails[c] = fails.get(c, 0) + 1
+        elif r["cmd"] == "success" and c and fails.get(c, 0) >= 2 and c not in nudged and c not in [o[0] for o in out]:
+            out.append((c, fails[c]))
+    return out
+
+
+def cmd_recall(args: argparse.Namespace) -> None:
+    """Hook entry. Reads the hook JSON on stdin, prints at most one line. Never fails the hook."""
+    event = read_event()
     if not FIELD_DIR.is_dir():
         return
     try:
+        if args.success:
+            cmd = first_token(str((event.get("tool_input") or {}).get("command", "")))
+            if cmd:
+                log_event("success", command=cmd)
+            for c, n in recovered_commands():
+                log_event("nudged", command=c)
+                print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": RECOVERY_NUDGE.format(cmd=c, n=n)}}))
+                break
+            return
         if args.failure:
             cmd = str((event.get("tool_input") or {}).get("command", ""))
             err = str(event.get("error") or event.get("tool_response") or "")
-            first = cmd.split()[0] if cmd.split() else ""
-            query = " ".join([first] + query_terms(err)[:8]).strip()
+            err = re.sub(r"^\s*Exit code \d+\s*", "", err)   # every Bash failure starts with this; it is not a clue
+            first = first_token(cmd)
             log_event("failure", command=first)
-            if not query:
+            terms = query_terms(err)[:8]
+            if not terms:
                 return
+            query = " ".join([first] + terms).strip()
             rows = recall_filter(hybrid_search(query))
             line = recall_line(rows)
-            log_event("recall", query=query, hits=len(rows), pages=[r["filename"] for r in rows], via="failure")
+            log_event("recall", hits=len(rows), pages=[r["filename"] for r in rows], via="failure", chars=len(query))
             if line:
                 print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUseFailure", "additionalContext": line}}))
             return
@@ -587,7 +677,8 @@ def cmd_recall(args: argparse.Namespace) -> None:
             return
         rows = recall_filter(hybrid_search(prompt))
         line = recall_line(rows)
-        log_event("recall", query=prompt[:120], hits=len(rows), pages=[r["filename"] for r in rows], via="prompt")
+        # the prompt text itself is not logged; it may hold secrets
+        log_event("recall", hits=len(rows), pages=[r["filename"] for r in rows], via="prompt", chars=len(prompt))
         if line:
             print(line)
     except SystemExit:
@@ -839,16 +930,45 @@ def age_hint(fm: dict, now: datetime | None = None) -> str | None:
     return f"{fm.get('kind')} page, {days} days since {'verified' if fm.get('verified') else 'written'}"
 
 
-UNSAFE_CHECK_RE = re.compile(r"(?<![<>])>{1,2}(?!&)|\bsed\s+-i|\btee\b|\|\s*(sh|bash|zsh)\b|\beval\b|\brm\b|\bmv\b|\bcurl\b[^|]*\|")
+# redirects are writes, except to /dev/null; the rest are the tools a check must never use
+UNSAFE_CHECK_RE = re.compile(r"(?<![<>])>{1,2}(?!&|\s*/dev/null\b)|\bsed\s+-i|\btee\b|\|\s*(sh|bash|zsh)\b|\beval\b|\brm\b|\bmv\b|\bdd\b|\bchmod\b|\bchown\b|\bkill\b|\bsystemctl\s+(start|stop|restart|enable|disable)|\bcurl\b[^|]*\|")
 
 
-def validate_check(command: str) -> None:
-    """A check must be read-only in form and must pass now, or it is refused."""
+def check_hash(command: str) -> str:
+    return hashlib.sha256(command.strip().encode()).hexdigest()[:16]
+
+
+def approved_checks() -> dict[str, str]:
+    path = state_dir() / "checks.json"
+    try:
+        return json.loads(path.read_text()) if path.is_file() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def approve_check(command: str, page: str) -> None:
+    """Record that this machine's user accepted this exact check. Checks from a clone run only after approval."""
+    data = approved_checks()
+    data[check_hash(command)] = page
+    try:
+        state_dir().mkdir(parents=True, exist_ok=True)
+        (state_dir() / "checks.json").write_text(json.dumps(data, indent=1))
+    except OSError:
+        pass
+
+
+def check_approved(command: str) -> bool:
+    return check_hash(command) in approved_checks()
+
+
+def validate_check(command: str, page: str = "") -> None:
+    """A check must be read-only in form and must pass now, or it is refused. Passing approves it on this machine."""
     if UNSAFE_CHECK_RE.search(command):
         die("check must be read-only: no redirects, sed -i, tee, pipes into a shell, eval, rm, or mv")
     reason = run_check(command)
     if reason:
         die(f"check does not pass now, so it cannot guard this page: {reason}")
+    approve_check(command, page)
 
 
 def run_check(command: str) -> str | None:
@@ -863,7 +983,7 @@ def run_check(command: str) -> str | None:
 
 
 # Signal ranks, strongest first. doubt sorts by these.
-RANK = {"ref": 0, "check": 1, "url": 2, "age": 3}
+RANK = {"ref": 0, "check": 1, "url": 2, "unapproved": 3, "age": 4}
 
 
 def suspicion(fm: dict, root: Path | None = None, run_checks: bool = False, now: datetime | None = None, check_urls: bool = False) -> list[tuple[str, str]]:
@@ -881,9 +1001,12 @@ def suspicion(fm: dict, root: Path | None = None, run_checks: bool = False, now:
         if reason:
             found.append(("ref", reason))
     if run_checks and fm.get("check"):
-        reason = run_check(str(fm["check"]))
-        if reason:
-            found.append(("check", reason))
+        if check_approved(str(fm["check"])):
+            reason = run_check(str(fm["check"]))
+            if reason:
+                found.append(("check", reason))
+        else:
+            found.append(("unapproved", f"check not approved on this machine: `{fm['check']}` (memory approve PAGE runs it once and approves it)"))
     hint = age_hint(fm, now)
     if hint:
         found.append(("age", hint))
@@ -892,7 +1015,7 @@ def suspicion(fm: dict, root: Path | None = None, run_checks: bool = False, now:
 
 def marker(signals: list[tuple[str, str]]) -> str:
     """One line of markers for search output."""
-    parts = [("glance: " if sig in ("age", "url") else "suspect: ") + reason for sig, reason in signals]
+    parts = [("glance: " if sig in ("age", "url", "unapproved") else "suspect: ") + reason for sig, reason in signals]
     return "  " + "; ".join(parts) if parts else ""
 
 
@@ -926,7 +1049,7 @@ def cmd_doubt(args: argparse.Namespace) -> None:
     for name, summary, signals in rows:
         print(f"{name}: {summary}")
         for sig, reason in signals:
-            print(f"    {'glance' if sig in ('age', 'url') else 'suspect'}: {reason}")
+            print(f"    {'glance' if sig in ('age', 'url', 'unapproved') else 'suspect'}: {reason}")
         if not signals:
             print("    clean")
 
@@ -959,7 +1082,7 @@ def cmd_write(args: argparse.Namespace) -> None:
     if args.ref:
         fm["refs"] = [fill_ref(r) for r in args.ref]
     if args.check:
-        validate_check(args.check)
+        validate_check(args.check, args.page)
         fm["check"] = args.check
     problems = validate_page(args.page, fm, body)
     errors = [p for p in problems if not p.startswith("warning:")]
@@ -976,6 +1099,26 @@ def cmd_write(args: argparse.Namespace) -> None:
     reindex()
 
 
+def cmd_approve(args: argparse.Namespace) -> None:
+    """Run a page's check once, show the result, and approve it on this machine. Ask the creator first."""
+    require_field()
+    page = FIELD_DIR / args.page
+    if not page.is_file():
+        die(f"no such page {args.page}")
+    fm, _ = parse_page(page.read_text())
+    cmd = str(fm.get("check") or "")
+    if not cmd:
+        die(f"{args.page} has no check")
+    if UNSAFE_CHECK_RE.search(cmd):
+        die("refused: the check is not read-only in form")
+    reason = run_check(cmd)
+    if reason:
+        die(f"check fails, not approved: {reason}")
+    approve_check(cmd, args.page)
+    log_event("approve", page=args.page)
+    print(f"approved on this machine: `{cmd}`")
+
+
 def cmd_verify(args: argparse.Namespace) -> None:
     """The agent re-confirmed the page. Record when and refresh its refs to the current commits."""
     require_field()
@@ -987,6 +1130,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
         reason = run_check(str(fm["check"]))
         if reason:
             die(f"cannot verify: {reason}. Fix the page or its check first.")
+        approve_check(str(fm["check"]), args.page)
     fm["verified"] = now_iso()
     if fm.get("refs"):
         # re-confirmed against the cited files as they are now, so cite them as they are now
@@ -1210,15 +1354,24 @@ def install_tool(pin: dict[str, str]) -> bool:
 def cmd_doctor(args: argparse.Namespace) -> None:
     pin = read_pin()
     if args.brief:
+        event = read_event()
+        hook = str(event.get("hook_event_name") or "")
+        source = str(event.get("source") or "")
+
+        def emit(line: str) -> None:
+            if hook == "SubagentStart":
+                print(json.dumps({"hookSpecificOutput": {"hookEventName": "SubagentStart", "additionalContext": line}}))
+            else:
+                print(line)
         if not config_file().is_file():
-            print("memory: not set up on this machine. Ask the creator whether embeddings come from ollama on this machine or on a remote host (semantic search, the default), or whether ollama cannot run here at all (string search fallback); then run `memory setup` with their answer, `memory init` if this repository has no .memory/, and `memory doctor --fix`.")
+            emit("memory: not set up on this machine. Ask the creator whether embeddings come from ollama on this machine or on a remote host (semantic search, the default), or whether ollama cannot run here at all (string search fallback); then run `memory setup` with their answer, `memory init` if this repository has no .memory/, and `memory doctor --fix`.")
             return
         if not FIELD_DIR.is_dir():
-            print("memory: this repository has no .memory/. Ask the creator whether to create one; if yes, run `memory init`.")
+            emit("memory: this repository has no .memory/. Ask the creator whether to create one; if yes, run `memory init`.")
             return
         found = read_format()
         if found is not None and found > FORMAT:
-            print(f"memory: .memory was written by a newer memory plugin (format {found}); update the plugin")
+            emit(f"memory: .memory was written by a newer memory plugin (format {found}); update the plugin")
             return
         pages = list_pages()
         n = len(pages)
@@ -1247,7 +1400,9 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         if n > 50:
             parts.append(f"{n} pages is a lot: merge or delete before writing more.")
         parts.append("A hook names matching pages when the creator prompts; read them. `memory search QUERY` before an install, a fix, or a design.")
-        print(" ".join(parts))
+        if source == "compact" and session_counts()["writes"] == 0:
+            parts.append("Context was just compacted and this session wrote no memory: if the summary above names a fix that took more than one attempt, write it now.")
+        emit(" ".join(parts))
         return
     ok = True
 
@@ -1324,23 +1479,20 @@ def session_counts() -> dict[str, int]:
 
 
 def cmd_nudge(args: argparse.Namespace) -> None:
-    """PreCompact and Stop hooks. Speak only when this session learned the hard way and wrote nothing."""
+    """Stop hook. Speak once per session, only when a command failed twice and then worked and nothing was written."""
+    read_event()
     if not FIELD_DIR.is_dir():
         return
-    c = session_counts()
-    if args.compact:
-        if c["writes"] == 0:
-            print("memory: compaction is next and this session wrote no memory. Anything learned that a future session would re-derive: write it now, one page per finding, with Sources.")
-        return
     if args.stop:
-        mark = state_dir() / f"stop-{session_id()}"
-        if mark.exists() or c["failures"] < 2 or c["writes"] > 0:
+        rows = read_log(session=session_id())
+        if any(r["cmd"] == "stop-nudged" for r in rows):
             return
-        try:
-            state_dir().mkdir(parents=True, exist_ok=True); mark.write_text(now_iso())
-        except OSError:
-            pass
-        print(json.dumps({"decision": "block", "reason": f"This session hit {c['failures']} command failures and wrote no memory. If a fix was not obvious, write it now with `memory write`, one page per finding; then stop. This prompt appears once per session."}))
+        recovered = recovered_commands()
+        if not recovered:
+            return
+        log_event("stop-nudged")
+        names = ", ".join(f"`{c}` ({n} failures)" for c, n in recovered[:3])
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": f"memory: before you stop: {names} failed and then worked this session, and nothing was written to memory. If the fix was not obvious from a file in the repository, write one page per finding with `memory write`; if there is nothing worth a page, say so and stop. This appears once per session."}}))
 
 
 def cmd_stats(args: argparse.Namespace) -> None:
@@ -1373,7 +1525,7 @@ def cmd_stats(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="memory", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(prog="memory", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter, allow_abbrev=False)
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("search", help="ranked pages for one or more queries; several terms are searched separately and merged")
@@ -1398,6 +1550,10 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--ref", action="append", help="repo path, path@sha, or a URL; repeatable. Bare paths get the last commit's sha")
     p.add_argument("--check", help="read-only shell command; exit 0 means the page still holds")
     p.set_defaults(func=cmd_write)
+
+    p = sub.add_parser("approve", help="run a page's check once and approve it on this machine (ask the creator first)")
+    p.add_argument("page")
+    p.set_defaults(func=cmd_approve)
 
     p = sub.add_parser("verify", help="record that a page was re-confirmed just now")
     p.add_argument("page")
@@ -1436,10 +1592,11 @@ def main(argv: list[str] | None = None) -> None:
 
     p = sub.add_parser("recall", help="hook entry: name pages that match the prompt (stdin JSON)")
     p.add_argument("--failure", action="store_true", help="PostToolUseFailure: search the failed command and its error")
+    p.add_argument("--success", action="store_true", help="PostToolUse: log the command; nudge to write when it had failed twice before")
     p.set_defaults(func=cmd_recall)
 
     p = sub.add_parser("nudge", help="hook entry: PreCompact or Stop reminder to write")
-    p.add_argument("--compact", action="store_true"); p.add_argument("--stop", action="store_true")
+    p.add_argument("--stop", action="store_true")
     p.set_defaults(func=cmd_nudge)
 
     p = sub.add_parser("stats", help="how memory is being used, from the local log")
@@ -1448,7 +1605,7 @@ def main(argv: list[str] | None = None) -> None:
 
     args = parser.parse_args(argv)
     set_root(project_root())
-    if args.command not in ("doctor", "init", "setup", "recall", "nudge", "stats"):
+    if args.command not in ("doctor", "init", "setup", "recall", "nudge", "stats", "approve"):
         check_format()
     args.func(args)
 

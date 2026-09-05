@@ -4,7 +4,7 @@
 # cited in memory pages. Ask the creator to approve it. Everything else: allow.
 input=$(cat)
 case "$input" in
-  *memory*doubt*--network*|*memory*--network*doubt*)
+  *memory*doubt*--n*|*memory*--n*doubt*)
     printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"memory doubt --network contacts every URL cited in memory pages. Approve only if you agreed to that."}}'
     ;;
 esac

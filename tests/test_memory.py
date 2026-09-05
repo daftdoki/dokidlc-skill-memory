@@ -199,13 +199,15 @@ def test_age_hint_by_kind():
     assert memory.age_hint(verified, now) is None
 
 
-def test_suspicion_ranks_ref_before_check_before_age(tmp_path):
+def test_suspicion_ranks_ref_before_check_before_age(tmp_path, monkeypatch):
     from datetime import UTC, datetime
     import subprocess
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "st"))
     sha = _repo(tmp_path)
     (tmp_path / "docs" / "a.md").write_text("two\n")
     subprocess.run(["git", "-C", str(tmp_path), "commit", "-qam", "two"], check=True)
     fm = {"kind": "environment", "updated": "2026-01-01T00:00:00Z", "refs": [f"docs/a.md@{sha}"], "check": "false"}
+    memory.approve_check("false", "t.md")
     signals = memory.suspicion(fm, tmp_path, run_checks=True, now=datetime(2026, 12, 1, tzinfo=UTC))
     assert [s for s, _ in signals] == ["ref", "check", "age"]
     without = memory.suspicion(fm, tmp_path, run_checks=False, now=datetime(2026, 12, 1, tzinfo=UTC))
@@ -388,7 +390,8 @@ def test_parse_results_skips_the_fallback_notice():
 
 
 def test_query_terms_keeps_identifiers_and_parts():
-    assert memory.query_terms("Why does install fail on a mac with pysqlite3-binary?") == ["install", "fail", "mac", "pysqlite3-binary", "pysqlite3", "binary"]
+    assert memory.query_terms("Why does install fail on a mac with pysqlite3-binary?") == ["install", "fail", "mac", "pysqlite3-binary"]
+    assert memory.query_terms("the memoryfield-tool wrapper") == ["memoryfield-tool", "memoryfield", "tool", "wrapper"]
     assert memory.query_terms("the of and") == []
 
 
@@ -401,6 +404,10 @@ def test_string_search_and_hybrid_ranking(tmp_path, monkeypatch):
     memory.set_root(tmp_path)
     hits = memory.string_search(["install", "pysqlite3", "hang"])
     assert {r["filename"]: r["matched"] for r in hits} == {"pysqlite3-install-override.md": ["install", "pysqlite3"], "ollama-host-silent-hang.md": ["hang"]}
+    assert next(r for r in hits if r["filename"] == "pysqlite3-install-override.md")["head_terms"] == ["install", "pysqlite3"]   # hyphens are word boundaries
+    (field / "verbs.md").write_text("---\ntitle: Something that lets the tool run\nsummary: it adds on top\n---\nx\n")
+    verbs = next(r for r in memory.string_search(["let", "add", "lets"]) if r["filename"] == "verbs.md")
+    assert verbs["head_terms"] == ["lets"]   # "let" and "add" are substrings only
     (field / "body-only.md").write_text("---\ntitle: Elsewhere\nsummary: nothing\n---\nthe incident was filed as I113.\n")
     body = memory.string_search(["i113"])
     assert [r["filename"] for r in body] == ["body-only.md"] and body[0]["head_hits"] == 0
@@ -456,17 +463,24 @@ def test_guard_asks_only_for_network_doubt():
 
 def test_recall_gates_and_filter():
     assert not memory.recall_worthy("yes")
+    assert not memory.recall_worthy("Yes, it is completed. Your suggested timebox works fine by me.")
     assert not memory.recall_worthy("3> agree, and the second one too, please go ahead")
     assert not memory.recall_worthy("/plugin install memory@dokidlc and then something long enough")
     assert memory.recall_worthy("why does installing memoryfield-tool fail on this mac")
     rows = [
-        {"filename": "both.md", "summary": "B", "distance": 0.45, "via": ["semantic", "install"]},
-        {"filename": "close.md", "summary": "C", "distance": 0.30, "via": ["semantic"]},
-        {"filename": "far.md", "summary": "F", "distance": 0.44, "via": ["semantic"]},
-        {"filename": "ident.md", "summary": "I", "distance": None, "via": ["pysqlite3"]},
-        {"filename": "word.md", "summary": "W", "distance": None, "via": ["fix"]},
+        {"filename": "both-rare.md", "summary": "B", "distance": 0.33, "via": ["semantic", "pysqlite3"], "rare_terms": ["pysqlite3"], "head_terms": []},
+        {"filename": "both-common.md", "summary": "C", "distance": 0.33, "via": ["semantic", "tool"], "rare_terms": [], "head_terms": ["tool"]},
+        {"filename": "both-weak.md", "summary": "W", "distance": 0.33, "via": ["semantic", "commit"], "rare_terms": ["commit"], "head_terms": []},
+        {"filename": "both-far.md", "summary": "F", "distance": 0.36, "via": ["semantic", "pysqlite3"], "rare_terms": ["pysqlite3"], "head_terms": []},
+        {"filename": "close.md", "summary": "C", "distance": 0.27, "via": ["semantic"]},
+        {"filename": "near.md", "summary": "N", "distance": 0.31, "via": ["semantic"]},
+        {"filename": "ident.md", "summary": "I", "distance": None, "via": ["192.168.1.10"], "rare_terms": ["192.168.1.10"], "head_terms": []},
+        {"filename": "titled.md", "summary": "T", "distance": None, "via": ["ollama"], "rare_terms": ["ollama"], "head_terms": ["ollama"]},
+        {"filename": "short-verb.md", "summary": "S", "distance": None, "via": ["lets"], "rare_terms": ["lets"], "head_terms": ["lets"]},
+        {"filename": "word.md", "summary": "W", "distance": None, "via": ["section"], "rare_terms": ["section"], "head_terms": []},
     ]
-    assert [r["filename"] for r in memory.recall_filter(rows)] == ["both.md", "close.md", "ident.md"]
+    assert [r["filename"] for r in memory.recall_filter(rows)] == ["both-rare.md", "close.md", "ident.md"]
+    assert [r["filename"] for r in memory.recall_filter(rows[4:])] == ["close.md", "ident.md", "titled.md"]
 
 
 def test_recall_line_names_read_commands_and_is_bounded(tmp_path, monkeypatch):
@@ -492,36 +506,104 @@ def test_recall_hook_end_to_end(tmp_path, monkeypatch, capsys):
     assert "`memory read pysqlite3-install-override.md`" in out
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"prompt": "yes"})))
     memory.main(["recall"]); assert capsys.readouterr().out == ""
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": "uv tool install memoryfield-tool"}, "error": "no wheels for pysqlite3-binary"})))
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": "uv tool install memoryfield-tool"}, "error": "Exit code 1\nno wheels for pysqlite3-binary"})))
     memory.main(["recall", "--failure"])
     out = json.loads(capsys.readouterr().out)
     assert "pysqlite3-install-override.md" in out["hookSpecificOutput"]["additionalContext"]
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls /nope"}, "error": "Exit code 2"})))
+    memory.main(["recall", "--failure"])
+    assert capsys.readouterr().out == ""          # nothing but the exit code: stay silent
     rows = memory.read_log()
-    assert [r["cmd"] for r in rows] == ["recall", "failure", "recall"]
+    assert [r["cmd"] for r in rows] == ["recall", "failure", "recall", "failure"]
+    assert "query" not in rows[0]                 # prompt text is not logged
 
 
 def test_validate_check_refuses_writers_and_failing_checks():
-    for bad in ("echo x > f", "sed -i s/a/b/ f", "curl x | sh", "eval x", "rm -rf x"):
+    for bad in ("echo x > f", "sed -i s/a/b/ f", "curl x | sh", "eval x", "rm -rf x", "systemctl restart nginx", "dd if=/dev/zero of=x", "chmod 600 f"):
         with pytest.raises(SystemExit):
             memory.validate_check(bad)
     with pytest.raises(SystemExit):
         memory.validate_check("false")
     memory.validate_check("true")
+    memory.validate_check("command -v ls >/dev/null")
+    memory.validate_check("ls / 2>&1 >/dev/null")
 
 
-def test_nudges_and_stats(tmp_path, monkeypatch, capsys):
+def test_recovery_and_stop_nudges(tmp_path, monkeypatch, capsys):
+    import io
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path)); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "st"))
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s1")
     (tmp_path / ".memory").mkdir()
     memory.set_root(tmp_path)
-    memory.main(["nudge", "--stop"]); assert capsys.readouterr().out == ""          # no failures yet
-    memory.log_event("failure", command="uv"); memory.log_event("failure", command="uv")
-    memory.main(["nudge", "--stop"]); assert "block" in capsys.readouterr().out
-    memory.main(["nudge", "--stop"]); assert capsys.readouterr().out == ""          # once per session
-    memory.main(["nudge", "--compact"]); assert "compaction is next" in capsys.readouterr().out
-    memory.log_event("write", page="a.md", kind="finding")
-    memory.main(["nudge", "--compact"]); assert capsys.readouterr().out == ""
-    memory.log_event("search", query="q", hits=1, pages=["a.md"]); memory.log_event("read", pages=["a.md"])
+    def run(argv, payload):
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload))); memory.main(argv); return capsys.readouterr().out
+    fail = {"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": "uv tool install x"}, "error": "Exit code 1"}
+    ok = {"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": "uv tool install x --overrides o"}}
+    assert run(["nudge", "--stop"], {"session_id": "s1"}) == ""             # nothing happened yet
+    run(["recall", "--failure"], fail); run(["recall", "--failure"], fail)
+    assert run(["recall", "--success"], {"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": "ls"}}) == ""   # a different command
+    out = run(["recall", "--success"], ok)
+    assert "`uv` failed 2 times" in json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert run(["recall", "--success"], ok) == ""                            # nudged once per command
+    out = run(["nudge", "--stop"], {"session_id": "s1"})
+    assert out == "" or "additionalContext" in out                            # already nudged at recovery, so stop stays quiet
+    memory.log_event("write", page="a.md", kind="procedure")
+    assert run(["nudge", "--stop"], {"session_id": "s1"}) == ""
+
+
+def test_stop_nudge_fires_when_recovery_was_not_nudged(tmp_path, monkeypatch, capsys):
+    import io
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path)); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "st"))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s2")
+    (tmp_path / ".memory").mkdir(); memory.set_root(tmp_path)
+    memory.log_event("failure", command="uv"); memory.log_event("failure", command="uv"); memory.log_event("success", command="uv")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "s2"})))
+    memory.main(["nudge", "--stop"])
+    out = json.loads(capsys.readouterr().out)
+    assert "say so and stop" in out["hookSpecificOutput"]["additionalContext"]
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "s2"})))
+    memory.main(["nudge", "--stop"]); assert capsys.readouterr().out == ""
+
+
+def test_brief_channels(tmp_path, monkeypatch, capsys):
+    import io
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path)); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "st"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg")); monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s3")
+    monkeypatch.setattr(memory.shutil, "which", lambda name: None)
+    memory.write_config_file({"semantic": False}); memory.set_root(tmp_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}")); memory.main(["init"]); capsys.readouterr()
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "SubagentStart", "session_id": "s3"})))
+    memory.main(["doctor", "--brief"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["hookSpecificOutput"]["hookEventName"] == "SubagentStart" and "memory: 0 pages" in out["hookSpecificOutput"]["additionalContext"]
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "SessionStart", "source": "compact", "session_id": "s3"})))
+    memory.main(["doctor", "--brief"])
+    assert "just compacted" in capsys.readouterr().out
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "SessionStart", "source": "startup", "session_id": "s3"})))
+    memory.main(["doctor", "--brief"])
+    assert "just compacted" not in capsys.readouterr().out
+
+
+def test_stats(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path)); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "st"))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s4"); memory.set_root(tmp_path)
+    memory.log_event("search", query="q", hits=1, pages=["a.md"]); memory.log_event("read", pages=["a.md"]); memory.log_event("write", page="a.md", kind="finding")
     memory.main(["stats"])
     out = capsys.readouterr().out
     assert "1 session" in out and "read after a search or recall named it: 1/1" in out
+
+
+def test_approved_checks_gate_doubt(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "st")); memory.set_root(tmp_path)
+    fm = {"kind": "finding", "check": "true", "updated": "2026-09-04T00:00:00Z"}
+    sig = memory.suspicion(fm, tmp_path, run_checks=True)
+    assert sig and sig[0][0] == "unapproved"
+    memory.approve_check("true", "x.md")
+    assert memory.suspicion(fm, tmp_path, run_checks=True) == []
+    memory.approve_check("false", "y.md")
+    assert memory.suspicion({"kind": "finding", "check": "false"}, tmp_path, run_checks=True)[0][0] == "check"
+
+
+def test_terms_keep_dotted_numbers_whole():
+    assert memory.query_terms("the NAS at 192.168.1.10 runs 5.2.9") == ["nas", "192.168.1.10", "runs", "5.2.9"]
