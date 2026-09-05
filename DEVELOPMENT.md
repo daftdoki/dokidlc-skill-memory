@@ -31,8 +31,8 @@ CLAUDE_PROJECT_DIR=/path/to/repo OLLAMA_HOST=127.0.0.1:11434 bin/memory search "
 
 ## Search mode and embedding host
 
-Semantic search is off unless `semantic = true` in the setup file or
-`OLLAMA_HOST` is exported. In substring mode the wrapper points the tool at
+Semantic search is on unless `semantic = false` in the setup file.
+`OLLAMA_HOST` exported always means semantic. In string mode the wrapper points the tool at
 a closed port so its client fails at once and falls back, and it skips
 reindexing. The host, when semantic is on, is resolved in this order: `OLLAMA_HOST` in the environment, then
 `embedding_host` in `~/.config/dokidlc-memory/config.toml` (written by

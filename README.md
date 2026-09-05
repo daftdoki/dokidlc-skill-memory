@@ -61,7 +61,7 @@ steer it:
 - "That page about the tailnet host is wrong now, the host is gone." The
   agent rewrites or deletes it.
 - "How much context does memory cost?" `memory cost`.
-- "Set up memory" or "switch memory to meaning search." The agent asks
+- "Set up memory" or "switch memory to string search, ollama can't run here." The agent asks
   its questions and runs `memory setup`, `init`, and `doctor --fix`.
 
 The commands, for reference:
@@ -110,8 +110,9 @@ generated topic list.
 
 - Claude Code 2.1.195 or later
 - `uv` on PATH (https://docs.astral.sh/uv/)
-- Optional, for semantic search: [ollama](https://ollama.com) with the
-  `nomic-embed-text` model, on this machine or on a host you can reach.
+- [ollama](https://ollama.com) with the `nomic-embed-text` model, on this
+  machine or on a host you can reach. Without it, string search still
+  works as a fallback.
 - A git repository
 
 ## Installation
@@ -124,9 +125,9 @@ claude plugin install memory@dokidlc
 ```
 
 Then start a session in a repository and say "set up memory." The agent
-asks whether you want word search or meaning search, and for meaning
-search whether the embedding model runs on this machine or on a remote
-host. It then runs the setup, creates `.memory/` with a short paragraph in
+asks whether the embedding model runs on this machine or on a remote
+host, or, if ollama cannot run where you are, sets string search as a
+fallback. It then runs the setup, creates `.memory/` with a short paragraph in
 `CLAUDE.md`, and installs what is missing: memoryfield-tool at the pinned
 commit, and for a local model on macOS, ollama and the model itself. On
 Linux it tells you the one ollama command to run. It stages `.memory/` and
@@ -136,7 +137,7 @@ persists if they are committed. You commit.
 
 Your choices are saved in `~/.config/dokidlc-memory/config.toml`. To
 change them later, say so; the agent runs `memory setup` again with your
-answer. An `OLLAMA_HOST` exported in the shell turns meaning search on and
+answer. An `OLLAMA_HOST` exported in the shell turns semantic search on and
 overrides the host.
 
 To have a repository declare the plugin for everyone who clones it, add to
@@ -156,19 +157,32 @@ Claude Code with `claude --plugin-dir /path/to/dokidlc-skill-memory`.
 
 ## Two ways to search
 
-**Substring search** is the default. It needs nothing installed. A query
-matches pages whose filename, title, or summary contain the words you
-typed, so it rewards good summaries and exact terms. It is fast, it works
-offline, and it is enough for a field of a few dozen pages that one agent
-wrote and knows the vocabulary of.
+If the terms are new to you: string search looks for the exact characters
+you typed, the way a text editor's find does. Semantic search turns your
+query and every page into numbers that stand for meaning and returns the
+pages whose meaning is closest, whether or not they share a word with the
+query.
 
-**Semantic search** matches meaning. "Why does install fail on a mac"
-finds the page about a missing wheel even though none of those words are
-in it. It needs an embedding model, `nomic-embed-text`, served by ollama on
-this machine or on a host you can reach, and it costs about half a second
-per search on Apple Silicon and a little more over the network. Turn it on
-with `memory setup --local` or `memory setup --host URL`. If the host stops
-answering, search falls back to substring matching and says so.
+**Semantic search** is the default. You search the way you would ask a
+colleague: "why does install fail on a mac" finds the page about a
+missing wheel even though it shares no words with the query. It needs an
+embedding model, `nomic-embed-text`, served by ollama on this machine or
+on a host you can reach. It costs about half a second per search on Apple
+Silicon and a little more over the network, and results are ranked by a
+distance score rather than an exact hit, so a page can appear that is
+merely near the subject.
+
+**String search** is the fallback, for an environment where ollama cannot
+run and cannot be reached: a locked-down container, a host with no
+network, a machine you cannot install on. It needs nothing. A query
+matches pages whose filename, title, or summary contain the text you
+typed, so you search the way you would grep, with the exact term you
+expect to be there: "pysqlite3" finds the missing-wheel page, "why does
+install fail on a mac" finds nothing. Memory still works, less well.
+Choose it with `memory setup --substring`; switch back with
+`memory setup --local` or `memory setup --host URL`. If a semantic host
+stops answering, search falls back to string matching for that query and
+says so.
 
 **The index.** Semantic search reads a vector index, one SQLite file per
 field, that memoryfield-tool builds from the pages. It lives in the
@@ -179,7 +193,7 @@ every `memory write`, `verify`, or `delete` the wrapper rebuilds the index
 before returning, embedding only pages whose content changed. A fresh
 clone has no index; the first `memory index` or the first write builds it
 from scratch in a few seconds. Deleting the cache loses nothing. In
-substring mode no index exists and no embedding host is ever contacted.
+string mode no index exists and no embedding host is ever contacted.
 
 ## Built on memoryfields
 

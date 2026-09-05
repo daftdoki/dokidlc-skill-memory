@@ -18,7 +18,7 @@ memory read PAGE.md                       one page
 memory doubt                              pages with evidence they may be wrong
 memory verify PAGE.md                     you re-confirmed it; record that and refresh its refs
 memory delete PAGE.md
-memory setup [--substring|--local|--host URL]   search mode and host, once per machine
+memory setup [--local|--host URL|--substring]   embedding host, or the string fallback; once per machine
 memory doctor --fix                       install or repair prerequisites
 memory init                               create .memory/ and the CLAUDE.md paragraph
 ```
@@ -45,19 +45,20 @@ The creator never has to run a command. When the session-start line says
 memory is not set up, or the creator asks for memory, hold a short
 conversation and then run the commands yourself.
 
-1. Ask: "Do you want search to match words only, which needs nothing
-   installed, or meaning, which needs an embedding model served by
-   ollama?" Explain the trade in one sentence if they hesitate: meaning
-   search finds a page about a missing wheel from "why does install fail
-   on a mac"; word search does not.
-2. If meaning: ask whether embeddings should come from ollama on this
-   machine or from a remote host, and if remote, its address.
+1. Ask whether the embedding model should run through ollama on this
+   machine or on a remote host, and if remote, its address. Semantic
+   search is the default and this is its only question.
+2. Only if the creator says ollama cannot run or be reached here: offer
+   string search as the fallback. Say plainly that it matches exact text
+   only, so "why does install fail on a mac" finds nothing where semantic
+   search finds the missing-wheel page, and that memory still works, less
+   well.
 3. Ask whether to create `.memory/` in this repository, if it has none.
 
 Then run, in order, showing each command first:
 
 ```
-memory setup --substring            or --local, or --host URL
+memory setup --local                or --host URL, or --substring for the fallback
 memory init                         if the creator said yes to a field
 memory doctor --fix                 installs the tool; for a local host on macOS also ollama and the model
 ```

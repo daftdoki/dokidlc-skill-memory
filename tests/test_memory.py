@@ -224,8 +224,8 @@ def test_run_check_pass_fail_timeout():
 
 def test_distance_text_handles_substring_fallback():
     assert memory.distance_text({"distance": 0.3333}) == "distance 0.333"
-    assert memory.distance_text({"distance": None}) == "substring match"
-    assert memory.distance_text({}) == "substring match"
+    assert memory.distance_text({"distance": None}) == "string match"
+    assert memory.distance_text({}) == "string match"
 
 
 def test_set_root_and_project_root(tmp_path, monkeypatch):
@@ -338,7 +338,9 @@ def test_setup_writes_config(tmp_path, monkeypatch, capsys):
         memory.main(["setup", "--semantic", "--substring"])
 
 
-def test_semantic_is_off_by_default(tmp_path, monkeypatch):
+def test_semantic_is_on_by_default(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    assert memory.semantic_enabled() is True
+    memory.write_config_file({"semantic": False})
     assert memory.semantic_enabled() is False
