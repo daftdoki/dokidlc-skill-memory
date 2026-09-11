@@ -1,0 +1,140 @@
+# Installing memory by hand
+
+The agent can do all of this for you. Say "set up memory" in a session and
+it holds a short conversation, then runs the commands. This document is for
+the case where you want to run them yourself, or where you are writing a
+bootstrap script for a new agent repository.
+
+## Where to run the commands
+
+Every command needs a repository, including the per-machine ones. `main()`
+calls `set_root(project_root())` before it dispatches any subcommand, and
+`project_root()` stops with "not inside a git repository and
+CLAUDE_PROJECT_DIR is unset". So run `git init` on the target repository
+first if it is new, then run everything below from inside it. Both of
+these work:
+
+- A Claude Code session opened in the target repository. The plugin puts
+  `memory` on PATH while it is enabled.
+- A terminal with the working directory inside the target repository. The
+  command is at
+  `~/.claude/plugins/cache/dokidlc/memory/<commit>/bin/memory`.
+
+## Per machine, once
+
+### 1. Check the prerequisites
+
+Claude Code 2.1.195 or later, `uv` on PATH, and git. `memory doctor` exits
+1 at the first check without `uv`.
+
+### 2. Add the marketplace and install the plugin
+
+```sh
+claude plugin marketplace add git@github.com:daftdoki/dokidlc-plugins.git
+claude plugin install memory@dokidlc
+```
+
+Use the full `git@` URL, not the `daftdoki/dokidlc-plugins` shorthand.
+dokidlc-plugins is private. The shorthand clones over SSH and fails with
+"No ED25519 host key is known for github.com" on a machine with no
+`known_hosts` file, which is the normal state of a fresh container. The
+shorthand is fine on a machine that already has github.com in
+`known_hosts`.
+
+### 3. Choose the search mode
+
+```sh
+memory setup --local                      # ollama on this machine
+memory setup --host http://frame:11434    # ollama on another host
+memory setup --substring                  # no ollama available
+```
+
+Pass a flag. `cmd_setup` in `bin/memory` calls `sys.stdin.isatty()` and
+stops with "not a terminal" when it gets neither flags nor a tty. The
+Claude Code Bash tool gives it no tty, so the interactive prompts only
+work from a real terminal. The answer goes to
+`~/.config/dokidlc-memory/config.toml`.
+
+### 4. Install the dependencies
+
+```sh
+memory doctor --fix
+```
+
+This installs memoryfield-tool from the commit in `memory.pin`, with an
+overrides file that drops `pysqlite3-binary`. That package ships a Linux
+x86_64 wheel only, and the tool falls back to stdlib sqlite3 without it.
+See `install_tool()` in `bin/memory`. On macOS, when the embedding host is
+local and does not answer, `--fix` also runs `brew install ollama` and
+`brew services start ollama`, then pulls `nomic-embed-text`. On Linux it
+prints the one ollama command to run.
+
+Doctor exits 1 here, and that is expected. The repository has no `.memory/`
+yet, so the field, CLAUDE.md, and persistence rows report FAIL. Only four
+rows must read `ok` at this point: `uv on PATH`, `memoryfield-tool`,
+`embedding host`, and `model nomic-embed-text`. The rest turn green at step
+9.
+
+## Per repository
+
+### 5. Make it a git repository
+
+Run `git init` if it is new, and add a `.gitignore`. Ignore Python caches
+and editor clutter. Do not ignore `.memory/`. `git_checks()` reports an
+ignored `.memory/` as a persistence failure.
+
+### 6. Create the field
+
+```sh
+memory init
+```
+
+This creates `.memory/index.md` from the template, appends the
+`## Memory <!-- memory -->` section to `CLAUDE.md`, and runs `git add` on
+both. Do not edit inside that marked section. `cmd_init` rewrites it
+whenever the plugin's text moves on. The top half of `index.md` is yours.
+The half below `<!-- generated below -->` is regenerated after every write.
+
+### 7. Declare the plugin in project settings
+
+Write `.claude/settings.json` by hand:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "dokidlc": { "source": { "source": "github", "repo": "daftdoki/dokidlc-plugins" } }
+  },
+  "enabledPlugins": { "memory@dokidlc": true }
+}
+```
+
+`claude plugin install memory@dokidlc -s project` writes only
+`enabledPlugins`. It leaves out `extraKnownMarketplaces` when this machine
+already knows the marketplace, and then the file resolves nowhere on a
+clone.
+
+### 8. Commit the three paths
+
+```sh
+git add .memory .claude/settings.json CLAUDE.md && git commit
+```
+
+These three are the `PERSISTED` tuple in `bin/memory`. Doctor checks that
+each one is tracked. Memory only survives a clone if they are committed.
+
+### 9. Confirm
+
+```sh
+memory doctor
+```
+
+Every row should read `ok`, including "field validates". The last line
+names the index cache directory. That cache is derived, never committed,
+and `memory index` rebuilds it.
+
+## What project settings do not do
+
+Settings declare intent. They install nothing. Someone who clones the new
+repository on another machine still needs steps 1 to 4 before `memory` is
+on PATH. Put those commands in the repository's own bootstrap script if the
+agent runs in a container.

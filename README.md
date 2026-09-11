@@ -19,6 +19,8 @@ page that search marks as suspect. Nothing in memory needs your approval,
 and nothing you asked for goes there. Memory is what the agent learned by
 itself; documents you review stay in `docs/`.
 
+To get straight to it, see [INSTALL.md](INSTALL.md).
+
 ## Why another memory system?
 
 Claude Code's own memory lives in a directory under your home, outside the
@@ -247,6 +249,10 @@ The plugin still needs the `claude plugin install` line once per machine.
 
 Manual install, without the marketplace: clone this repository and start
 Claude Code with `claude --plugin-dir /path/to/dokidlc-skill-memory`.
+
+[INSTALL.md](INSTALL.md) has every step as a command you run yourself,
+with the traps each one hides. Use it to bootstrap a new agent repository
+or to write a container's startup script.
 
 ## Built on memoryfields
 
