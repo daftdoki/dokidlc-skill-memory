@@ -98,6 +98,24 @@ page's check command.
 | The agent is about to stop | Once per session, only when a command failed twice then worked and nothing was written: write it, or say there is nothing worth a page. |
 | The agent runs `memory doubt --network` or `memory approve` | Claude Code asks you to approve it. |
 
+### Memory pages
+
+The agent writes pages. You rarely will. Each page is one topic, under
+8KB, with frontmatter that search and the trust rules read:
+
+```
+---
+title: A silent OLLAMA_HOST hangs the tool
+summary: Why the wrapper probes the host with a two-second timeout
+topics: [ollama, memoryfield-tool]
+kind: finding
+refs: [docs/research.md@61b6f00]
+check: curl -s localhost:11434 >/dev/null
+verified: '2026-09-04T22:42:52Z'
+---
+The tool hangs about 75 seconds on a host that accepts a connection and
+goes silent, because the client has no timeout.
+
 ## Sources
 
 - timed against /api/embed, 2026-09-01
