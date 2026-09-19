@@ -1495,6 +1495,10 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 suspects.append(page.name)
         top = ", ".join(f"{t} {c}" for t, c in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:4])
         parts = [f"memory: {n} page{'' if n == 1 else 's'}, {mode}."]
+        pin = read_pin()
+        if shutil.which("memoryfield-tool") is not None and not pin_matches(pin, installed_rev()):
+            # every tool call refuses until the pin matches, and the hooks swallow that; name the fix here
+            parts.append(f"memoryfield-tool is not at the pin {pin['tool_rev'][:7]}; every write and semantic search refuses until `memory doctor --fix` runs.")
         if top:
             parts.append(f"Topics: {top}.")
         if suspects:

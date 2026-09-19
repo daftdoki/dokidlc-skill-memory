@@ -289,6 +289,12 @@ def test_doctor_brief_guides_setup(tmp_path, monkeypatch, capsys):
     memory.main(["doctor", "--brief"])
     out = capsys.readouterr().out
     assert out.startswith("memory: 0 pages, string search.") and "Persistence:" in out   # no git repo yet
+    assert "not at the pin" not in out   # no tool installed: nothing to compare with the pin
+    monkeypatch.setattr(memory.shutil, "which", lambda name: "/usr/bin/memoryfield-tool")
+    monkeypatch.setattr(memory, "installed_rev", lambda: "deadbeef0000")
+    memory.main(["doctor", "--brief"])
+    out = capsys.readouterr().out
+    assert "memoryfield-tool is not at the pin" in out and "memory doctor --fix" in out
 
 
 def test_git_checks_and_init_staging(tmp_path, monkeypatch):
