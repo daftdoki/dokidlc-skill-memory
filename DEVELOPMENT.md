@@ -62,7 +62,9 @@ CI runs both on ubuntu and macos.
 memoryfield-tool is installed from a git commit because its PyPI release
 lags main, and with an overrides file that drops `pysqlite3-binary`, which
 ships only Linux x86_64 wheels while the tool falls back to stdlib sqlite3.
-`memory doctor --fix` does both. To bump: change `tool_rev` in
+`memory doctor --fix` does both. Every command that runs the tool checks its
+installed commit against the pin first and refuses a mismatch with the fix
+named. To bump: change `tool_rev` in
 `memory.pin`, run `memory doctor --fix`, run the tests, commit.
 
 ## Format and compatibility

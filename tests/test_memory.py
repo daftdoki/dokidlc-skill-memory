@@ -24,6 +24,7 @@ def test_field_name_is_stable_and_distinct(tmp_path):
     assert memory.field_name(a) != memory.field_name(b)
     assert memory.NAME_RE.match(memory.field_name(a))
     assert memory.field_name(a).startswith("agent-one-")
+    assert memory.config_path(a) != memory.config_path(b)   # two clones, two configs
 
 
 def test_config_text_points_at_dot_memory(tmp_path):
@@ -402,6 +403,7 @@ def test_string_search_and_hybrid_ranking(tmp_path, monkeypatch):
     (field / "ollama-host-silent-hang.md").write_text("---\ntitle: A silent OLLAMA_HOST hangs the tool\nsummary: probe first\n---\nx\n")
     (field / "unrelated.md").write_text("---\ntitle: Something else\nsummary: nothing here\n---\nx\n")
     memory.set_root(tmp_path)
+    assert memory.string_search(["intro"]) == []   # index.md is never a result on the string path either
     hits = memory.string_search(["install", "pysqlite3", "hang"])
     assert {r["filename"]: r["matched"] for r in hits} == {"pysqlite3-install-override.md": ["install", "pysqlite3"], "ollama-host-silent-hang.md": ["hang"]}
     assert next(r for r in hits if r["filename"] == "pysqlite3-install-override.md")["head_terms"] == ["install", "pysqlite3"]   # hyphens are word boundaries
@@ -464,6 +466,77 @@ def test_verify_requires_an_approved_check(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit):
         memory.main(["verify", "bad.md"])
     assert "not read-only" in capsys.readouterr().err
+
+
+def _fake_tool(field):
+    """Stands in for memoryfield-tool: write stores the page, everything else succeeds silently."""
+    def fake(*a, stdin=None, **k):
+        if a[0] == "write":
+            (field / a[-1]).write_text(stdin)
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    return fake
+
+
+def test_verify_clears_a_changed_ref(tmp_path, monkeypatch, capsys):
+    """Design test 1: suspect after the cited path changes, clean after verify."""
+    import subprocess
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path)); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "st"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg")); monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    sha = _repo(tmp_path)
+    field = tmp_path / ".memory"; field.mkdir(); memory.set_root(tmp_path)
+    (field / "cited.md").write_text(f"---\ntitle: C\nsummary: c\nkind: finding\nrefs:\n- docs/a.md@{sha}\n---\nx\n")
+    (tmp_path / "docs" / "a.md").write_text("two\n")
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qam", "two"], check=True)
+    assert [s for s, _ in memory.suspicion(memory.page_frontmatter("cited.md"), tmp_path)] == ["ref"]
+    monkeypatch.setattr(memory, "tool", _fake_tool(field))
+    monkeypatch.setattr(memory, "reindex", lambda: None)
+    memory.main(["verify", "cited.md"])
+    assert "verified cited.md" in capsys.readouterr().out
+    fm = memory.page_frontmatter("cited.md")
+    assert fm["verified"] and fm["refs"][0].startswith("docs/a.md@") and not fm["refs"][0].endswith(sha)
+    assert memory.suspicion(fm, tmp_path) == []
+
+
+def test_pull_prints_the_marker_above_each_page(tmp_path, monkeypatch, capsys):
+    import subprocess
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path)); monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "st"))
+    sha = _repo(tmp_path)
+    field = tmp_path / ".memory"; field.mkdir(); memory.set_root(tmp_path)
+    (field / "cited.md").write_text(f"---\ntitle: C\nsummary: cited page\nkind: finding\nrefs:\n- docs/a.md@{sha}\n---\nx\n")
+    (field / "clean.md").write_text("---\ntitle: D\nsummary: clean page\nkind: finding\n---\ny\n")
+    (tmp_path / "docs" / "a.md").write_text("two\n")
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qam", "two"], check=True)
+    monkeypatch.setattr(memory, "hybrid_search", lambda q: [
+        {"filename": "cited.md", "summary": "cited page", "distance": 0.2, "via": ["semantic"]},
+        {"filename": "clean.md", "summary": "clean page", "distance": 0.3, "via": ["semantic"]},
+    ])
+    monkeypatch.setattr(memory, "tool", lambda *a, **k: type("P", (), {"returncode": 0, "stdout": f"<{a[-1]}>\n", "stderr": ""})())
+    memory.main(["pull", "anything"])
+    out = capsys.readouterr().out
+    assert out.startswith(memory.READ_HEAD) and out.endswith(memory.READ_TAIL)
+    lines = out.splitlines()
+    assert lines[1].startswith("cited.md: cited page") and "suspect: docs/a.md changed" in lines[1] and lines[2] == "<cited.md>"
+    assert lines[3].startswith("clean.md: clean page") and "suspect" not in lines[3] and lines[4] == "<clean.md>"
+
+
+def test_tool_refuses_an_unpinned_install(monkeypatch, capsys):
+    monkeypatch.setattr(memory, "_PIN_OK", False)
+    monkeypatch.setattr(memory.shutil, "which", lambda name: "/usr/bin/memoryfield-tool")
+    monkeypatch.setattr(memory, "installed_rev", lambda: "deadbeef0000")
+    with pytest.raises(SystemExit):
+        memory.tool("validate")
+    err = capsys.readouterr().err
+    assert "at deadbee" in err and memory.read_pin()["tool_rev"][:7] in err and "memory doctor --fix" in err
+    monkeypatch.setattr(memory, "installed_rev", lambda: None)
+    with pytest.raises(SystemExit):
+        memory.tool("validate")
+    assert "an unknown commit" in capsys.readouterr().err
+    monkeypatch.setattr(memory, "installed_rev", lambda: memory.read_pin()["tool_rev"])
+    ran = []
+    monkeypatch.setattr(memory.subprocess, "run", lambda argv, **k: ran.append(argv) or type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})())
+    monkeypatch.setattr(memory, "tool_env", lambda root=None: {})
+    memory.tool("validate")
+    assert ran == [["memoryfield-tool", "validate"]] and memory._PIN_OK
 
 
 def test_first_token_uses_the_launcher_pair():

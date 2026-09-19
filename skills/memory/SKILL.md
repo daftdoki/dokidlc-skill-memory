@@ -1,6 +1,6 @@
 ---
 name: memory
-description: Search and maintain this agent's memory of what it has learned. Use before investigating anything a past session may have met, and after learning something a future session should not have to rediscover.
+description: Search and maintain this agent's memory of what it has learned. Use before investigating anything that a past session may have met, and after learning something a future session should not have to rediscover.
 ---
 
 # Memory
