@@ -1,275 +1,166 @@
 # dokidlc-skill-memory
 
-A Claude Code plugin that gives your agent a memory of its own, so what one
-session learns the next one can find. Pages are markdown files in
-`.memory/` in the [memoryfield](https://github.com/calpaterson/memoryfield-spec)
-format, searched semantically through
-[memoryfield-tool](https://github.com/calpaterson/memoryfield-tool). A page
-is trusted until there is evidence against it: a cited file changed since
-it was cited, a self-check failed, or a contradiction was met in use. Age
-alone is only a hint.
+A Claude Code plugin that keeps what your agent learns in the repository, searchable by meaning.
 
-With it enabled, the agent will on its own: see matching pages named
-every time you send a prompt, and again when a command fails; search
-before it installs, configures, debugs, or designs; write a page when
-something took more than one attempt, when a quest stage closes, and
-when a hook warns that the session learned things it has not written;
-correct or delete a page it finds wrong, in the same turn; and re-check a
-page that search marks as suspect. Nothing in memory needs your approval,
-and nothing you asked for goes there. Memory is what the agent learned by
-itself; documents you review stay in `docs/`.
+It installs as `memory@dokidlc`. Pages are markdown files in `.memory/` in
+the [memoryfield](https://github.com/calpaterson/memoryfield-spec) format,
+so they travel with the code in git and any memoryfield tool can read
+them. Three parts: the `memory` command, which wraps
+[memoryfield-tool](https://github.com/calpaterson/memoryfield-tool) with
+per-repository configuration, a guard on the embedding host, and a trust
+model; seven hooks that put the matching page in front of the agent as it
+works; and a skill that says when to search, when to write, and what to
+do with a page found wrong.
 
-To get straight to it, see [INSTALL.md](INSTALL.md).
+With it enabled, the agent works memory on its own. Every prompt you send
+is searched, and when pages match, one line names them with the command to
+read each. A shell command that fails is searched with its error text. The
+agent searches before it installs, configures, debugs, or designs, and
+writes a page when something took more than one attempt. A page cites
+files at a commit; when a cited file changes, search marks the page
+suspect and the agent reads the diff, then verifies, rewrites, or deletes
+the page in the same turn. A page can carry a read-only check command, and
+`memory doubt` runs the checks and lists every page with evidence against
+it. `memory cost` prices the index and one search in tokens; `memory
+stats` counts how often a search led to a read.
+
+Nothing in memory needs your approval, and nothing you asked for goes
+there. Memory is what the agent learned by itself; documents you review
+stay in `docs/`.
 
 ## Why another memory system?
 
 Claude Code's own memory lives in a directory under your home, outside the
 repository. It is per machine and per user, git never carries it, and it
 loads its index into every session. That is the right place for facts about
-the machine and preferences about you: which host this is, where the tools
-are installed, how you like to be spoken to.
+the machine and about you: which host this is, where the tools are
+installed, how you like to be spoken to.
 
 This plugin is for what the agent learns about the project: a quirk of a
 tool, a procedure that worked, a finding about the domain, a decision and
-its reason. That knowledge belongs with the code, in git, so it travels to
-every clone, every machine, and every collaborator, and so it can be
-diffed, reviewed, and rolled back like anything else in the repository. It
-is found by semantic search rather than loaded whole, so it stays cheap as
-it grows. And it can cite files at a commit, which is what lets a page be
-marked suspect when the thing it describes changes.
-
-The two coexist by content, not by mechanism:
+its reason. That knowledge belongs with the code, in git, so it reaches
+every clone and can be diffed, reviewed, and rolled back like anything
+else in the repository. It is found by search rather than loaded whole, so
+it stays cheap as it grows. And it cites files at a commit, which is what
+lets a page be marked suspect when the thing it describes changes. Age
+alone is only a hint.
 
 | Belongs in | Examples |
 |---|---|
-| Claude Code's memory | this machine's hostname, local paths, the creator's tone preference, a fact true only here |
-| `.memory/` (this plugin) | the tool that fails to install on macOS and the fix, the port a service listens on and why, the trust model the creator chose |
-| `docs/` | anything the creator asked for or reviewed: designs, research, decisions with their reasoning |
+| Claude Code's memory | this machine's hostname, local paths, your tone preference, a fact true only here |
+| `.memory/` (this plugin) | the tool that fails to install on macOS and the fix, the port a service listens on and why, the trust model you chose |
+| `docs/` | anything you asked for or reviewed: designs, research, decisions with their reasoning |
 
 A memory page may cite a document in `docs/`. A document never cites
-memory. When the agent finds something in memory that the creator should
-review, it proposes a document and the page cites it.
+memory.
 
-## Usage
+## Status
 
-Mostly you do nothing. The agent searches and writes as it works. You can
-steer it:
+Experimental. In daily use on two repositories since 2026-09-05. The page
+format is fixed; the wrapper's commands and hooks may change between
+pinned commits.
 
-- "Do you remember anything about installing this?" The agent runs
-  `memory search "installing memoryfield-tool"` and reads you the matches,
-  each marked with whether meaning, exact terms, or both found it.
-- "Remember that the NAS keeps its live firmware version in
-  /etc/default_config, not /etc/config." The agent writes a page with a
-  title, a one-line summary, topics, a kind, and a Sources section.
-- "What in memory might be out of date?" The agent runs `memory doubt`
-  and lists pages with evidence against them.
-- "That page about the tailnet host is wrong now, the host is gone." The
-  agent rewrites or deletes it.
-- "How much context does memory cost?" `memory cost`.
-- "Is memory getting used?" `memory stats`: searches per session, how often
-  a named page was then read, pages written.
-- "Set up memory" or "switch memory to string search, ollama can't run here." The agent asks
-  its questions and runs `memory setup`, `init`, and `doctor --fix`.
+## Prerequisites
 
-The commands, for reference:
-
-```
-memory search "why does install fail on a mac"     ranked pages, with markers
-memory search install pysqlite3 wheel               several queries at once, results merged
-memory pull "embedding host"                        full text of matching pages
-memory read ollama-host-silent-hang.md
-memory doubt                                        pages with evidence they may be wrong
-memory verify ollama-host-silent-hang.md            re-confirmed; re-run its check, refresh its refs
-memory approve ollama-host-silent-hang.md           run a page's check once and approve it on this machine
-memory delete stale-page.md
-memory cost                                         bytes and tokens of index and search
-memory stats [--days N]                             searches, reads after a hit, writes, from a local log
-```
-
-### Hooks
-
-The plugin registers these hooks. All of them fail open. None runs a
-page's check command.
-
-| When | What the agent sees |
-|---|---|
-| Session start, and each subagent start | One line: page count, search mode, top topics, any page whose cited file changed. After a compaction, a reminder to write if the session has written nothing. |
-| Every prompt you send | If pages match, one line naming up to three with the `memory read` command for each. Short prompts, one-word answers, and slash commands are skipped. At most 400 bytes. |
-| A shell command fails | The same line, searched with the error text. Silent when the error says nothing but an exit code. |
-| A shell command works after failing twice | A reminder to write the fix as a procedure page, once per command. |
-| The agent is about to stop | Once per session, only when a command failed twice then worked and nothing was written: write it, or say there is nothing worth a page. |
-| The agent runs `memory doubt --network` or `memory approve` | Claude Code asks you to approve it. |
-
-### Memory pages
-
-The agent writes pages. You rarely will. Each page is one topic, under
-8KB, with frontmatter that search and the trust rules read:
-
-```
----
-title: A silent OLLAMA_HOST hangs the tool
-summary: Why the wrapper probes the host with a two-second timeout
-topics: [ollama, memoryfield-tool]
-kind: finding
-refs: [docs/research.md@61b6f00]
-check: curl -s localhost:11434 >/dev/null
-verified: '2026-09-04T22:42:52Z'
----
-The tool hangs about 75 seconds on a host that accepts a connection and
-goes silent, because the client has no timeout.
-
-## Sources
-
-- timed against /api/embed, 2026-09-01
-```
-
-| Key | Meaning |
-|---|---|
-| `title` | What the page is about. |
-| `summary` | One sentence. Search shows this line. |
-| `topics` | One or two tags. They make the topic list in `index.md`. |
-| `kind` | `environment`, `procedure`, `finding`, or `decision`. Says how fast the page can go stale. |
-| `refs` | Files this page cites, each at a commit, or URLs. If a file changes, the page becomes suspect. URLs are checked only when you allow it. |
-| `check` | A read-only command. If it fails, the page becomes suspect. A check runs on a machine only after that machine approved it. |
-| `verified` | When the agent last confirmed the page is still true. |
-
-Every page ends with a Sources section. It says where the fact came from,
-so a later session can check it. `memory write` refuses a body without
-one.
-
-A check written on this machine is approved here when it is written. A
-check that arrived with a clone runs only after the agent asks you and
-runs `memory approve` for that page, so a page from someone else cannot
-run a command on your machine unasked.
-
-URLs in `refs` are never contacted by search. The agent checks them only
-when you say it may. It asks first, and Claude Code prompts you to
-approve the command. A URL that answers "gone" makes the page suspect. A
-URL that does not answer adds a glance note.
-
-The kind sets an age. An `environment` page is old after 30 days, a
-`procedure` after 90, a `finding` after 180. A `decision` never gets
-old. When a page is older than that and nobody has confirmed it, search
-adds a "glance" note next to it. The note means "this might be out of
-date, look before you rely on it". The note is only a nudge. A page
-becomes suspect only when a file it cites changed, its check command
-failed, or the agent found it to be wrong. `index.md` is the one page the agent does not
-write: its top half is yours, its bottom half is a generated topic list.
-
-## How search works
-
-Each query runs a string and semantic search and the wrapper merges the
-results.
-
-Semantic search matches meaning. The query "why does install fail on a
-mac" finds the page about a missing wheel. The two share no words.
-Semantic search needs an embedding model, `nomic-embed-text`. Ollama
-serves the model on this machine or on a host you can reach. Semantic
-search is weak on exact identifiers such as "pysqlite3-binary" or
-"I113".
-
-String search matches exact text. The wrapper takes the important words
-from your query. It looks for them in the name, title, summary, and body
-of each page. String search needs no model and no index. It finds
-identifiers. It does not find paraphrase.
-
-The wrapper merges the two result lists. Pages that both searches found
-come first. Then come the other semantic results, nearest first. Then
-come the pages that only string search found. Each line shows which
-search found the page:
-
-```
-pysqlite3-install-override.md: Why memoryfield-tool needs a uv overrides file ... (distance 0.226; via semantic, install, pysqlite3-binary)
-```
-
-Semantic search answers questions. String search finds identifiers. A
-page that both searches found is the page to trust.
-
-### Without ollama
-
-Some machines cannot run or reach ollama. On such a
-machine, tell the agent to use string search. Then only string search
-runs.
-The agent searches for the words a page contains, not for the question.
-It tells you when it finds nothing. Memory works, but not as well.
-
-### Semantic index
-
-Semantic search reads an index. memoryfield-tool builds
-the index from the pages and keeps it in the cache directory of the
-machine. The index is not in the repository. The wrapper updates the
-index after each write. On a fresh clone, the wrapper builds the index
-again. You can delete the index at any time and lose nothing. The pages
-in `.memory/` are the only source of truth.
-
-## Requirements
-
-- Claude Code 2.1.195 or later
-- `uv` on PATH (https://docs.astral.sh/uv/)
+- Claude Code 2.1.195 or later, on macOS or Linux
+- [uv](https://docs.astral.sh/uv/) on PATH
 - [ollama](https://ollama.com) with the `nomic-embed-text` model, on this
-  machine or on a host you can reach. Without it, string search still
-  works as a fallback.
-- A git repository
+  machine or on a host you can reach. Without it, a string-search fallback
+  still works, and finds identifiers but not paraphrase.
+- A git repository. Memory only persists if `.memory/` is committed.
 
 ## Installation
 
-One command per machine, in Claude Code:
+Once per machine, in Claude Code:
 
 ```
 /plugin marketplace add daftdoki/dokidlc-plugins
 claude plugin install memory@dokidlc
 ```
 
-Then start a session in a repository and say "set up memory." The agent
-asks whether you want semantic search, the default, or the string search
-fallback for a machine where ollama cannot run, and for semantic search
-whether the embedding model runs on this machine or on a remote host. It then runs the setup, creates `.memory/` with a short paragraph in
-`CLAUDE.md`, and installs what is missing: memoryfield-tool at the pinned
-commit, and for a local model on macOS, ollama and the model itself. On
-Linux it tells you the one ollama command to run. It stages `.memory/` and
-the `CLAUDE.md` paragraph and checks that they, and
-`.claude/settings.json`, are tracked and not ignored, since memory only
-persists if they are committed. You commit.
+Then open a session in a repository and say "set up memory". The agent
+asks whether you want semantic search or the string fallback, and where
+the embedding model runs. It then runs `memory setup`, `memory init`, and
+`memory doctor --fix`, which installs memoryfield-tool at the pinned
+commit and, for a local model on macOS, ollama and the model. You commit
+what it staged. [INSTALL.md](INSTALL.md) has every step as a command you
+run yourself, for a bootstrap script or a container.
 
-Your choices are saved in `~/.config/dokidlc-memory/config.toml`. To
-change them later, say so; the agent runs `memory setup` again with your
-answer. An `OLLAMA_HOST` exported in the shell turns semantic search on and
-overrides the host.
+## Usage
 
-To have a repository declare the plugin for everyone who clones it, add to
-`.claude/settings.json`:
+Mostly you do nothing. Each session starts with one line:
 
-```json
-{
-  "extraKnownMarketplaces": { "dokidlc": { "source": { "source": "github", "repo": "daftdoki/dokidlc-plugins" } } },
-  "enabledPlugins": { "memory@dokidlc": true }
-}
+```
+memory: 59 pages, semantic via 127.0.0.1:11434. Topics: claude-code 20, questlog 17, decisions 9, plugin 8. 3 suspect: diff-pass-with-old-value-grep-finds-the-missed-copy.md, ... (cited file changed).
 ```
 
-The plugin still needs the `claude plugin install` line once per machine.
+Ask a question and the agent searches. "Do you remember anything about
+installing this on a mac?" runs:
 
-Manual install, without the marketplace: clone this repository and start
-Claude Code with `claude --plugin-dir /path/to/dokidlc-skill-memory`.
+```
+$ memory search "why does install fail on a mac"
+pysqlite3-install-override.md: Why memoryfield-tool needs a uv overrides file on macOS and arm64 Linux (distance 0.366; via semantic, install, mac)
+project-settings-do-not-install-plugins.md: Since 2.1.195 settings only enable plugins; each machine runs claude plugin install once ... (distance 0.409; via semantic, install, fail, mac)
+```
 
-[INSTALL.md](INSTALL.md) has every step as a command you run yourself,
-with the traps each one hides. Use it to bootstrap a new agent repository
-or to write a container's startup script.
+Each line says how the page was found. "Remember that the NAS keeps its
+live firmware in /etc/default_config" makes the agent write a page with a
+title, a one-line summary, topics, a kind, and a Sources section. "What in
+memory might be out of date?" runs `memory doubt`. The full command list
+is in `memory --help`; the rules the agent follows are in
+[skills/memory/SKILL.md](skills/memory/SKILL.md).
+
+## Caveats
+
+- The hooks fail open. A dead embedding host is skipped after a two-second
+  probe, and a search that cannot run prints nothing.
+- The semantic index lives in the machine's cache directory, not the
+  repository. A fresh clone rebuilds it on first use.
+- A check command that arrived with a clone runs only after the agent asks
+  you and runs `memory approve`. Until then `doubt` lists it and `verify`
+  refuses the page.
+- URLs in a page's refs are contacted only by `memory doubt --network`,
+  which asks you first.
+- Past fifty pages the session-start line says to merge or delete before
+  writing more. Search stays cheap as the field grows; near-duplicate
+  pages make it name the wrong one.
+- The plugin has to be installed once per machine. `.claude/settings.json`
+  can enable it for every clone, but cannot install it.
+
+## Configuration
+
+Your setup choices live in `~/.config/dokidlc-memory/config.toml`; say so
+and the agent runs `memory setup` again. An `OLLAMA_HOST` exported in the
+shell turns semantic search on and overrides the host. To enable the
+plugin for everyone who clones the repository, add the marketplace and
+the plugin to `.claude/settings.json` by hand; [INSTALL.md](INSTALL.md)
+shows the two keys.
+
+## Other docs
+
+- [INSTALL.md](INSTALL.md): every install step as a command, with the trap each one hides.
+- [docs/how-it-works.md](docs/how-it-works.md): the hooks, the page format and its keys, and how search ranks.
+- [skills/memory/SKILL.md](skills/memory/SKILL.md): the rules the agent follows for searching, writing, and doubt.
+- [skills/memory/evals/](skills/memory/evals/): the harness that measured the skill, and the numbers.
+- [docs/review-pass-recommendations.md](docs/review-pass-recommendations.md): a review of two fields after two weeks of use, with recommendations.
+- [DEVELOPMENT.md](DEVELOPMENT.md): working on the plugin itself.
+
+## Support
+
+File a bug or ask a question in
+[GitHub issues](https://github.com/daftdoki/dokidlc-skill-memory/issues).
 
 ## Built on memoryfields
 
-This plugin is a thin layer over memoryfields, Cal Paterson's format and
-tools for agent memory. The idea, the page format, and the search engine
-are his; this plugin adds the per-repository configuration, the host guard,
-the suspicion model, and the Claude Code packaging.
+The idea, the page format, and the search engine are Cal Paterson's:
+the [article](https://calpaterson.com/memoryfields.html), the
+[format specification](https://github.com/calpaterson/memoryfield-spec)
+(MIT), [memoryfield-tool](https://github.com/calpaterson/memoryfield-tool)
+(AGPL-3.0-or-later), and
+[his skill for agents](https://github.com/calpaterson/memoryfield-skill)
+(MIT). The tool is installed as published at the commit in `memory.pin`;
+nothing from it is copied here, and it reads the fields this plugin writes.
 
-- The article that started it: https://calpaterson.com/memoryfields.html
-- The format specification: https://github.com/calpaterson/memoryfield-spec (MIT)
-- The engine, memoryfield-tool: https://github.com/calpaterson/memoryfield-tool (AGPL-3.0-or-later)
-- His skill for agents, which informed ours: https://github.com/calpaterson/memoryfield-skill (MIT)
+## License
 
-memoryfield-tool is used as published, installed by `memory doctor --fix`
-at the commit in `memory.pin`. Nothing from it is copied into this
-repository. Fields written by this plugin are ordinary memoryfields and can
-be read, searched, exported, or served with his tool directly.
-
-See `DEVELOPMENT.md` to work on the plugin itself.
+MIT, DaftDoki. See [LICENSE](LICENSE).
