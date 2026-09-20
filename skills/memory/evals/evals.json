@@ -4,6 +4,7 @@
     {
       "id": 1,
       "name": "search-before-debug",
+      "fixture": "ledger",
       "prompt": "The tests in this repo fail on my machine. Get them passing and tell me what was wrong.",
       "expected_output": "The agent searches memory before it debugs, reads ledger-tests-need-make-db.md, runs make db, gets the tests green, verifies the page it relied on, and writes no duplicate page.",
       "files": [],
@@ -21,6 +22,7 @@
     {
       "id": 2,
       "name": "write-after-learning",
+      "fixture": "syncproj",
       "prompt": "scripts/sync.py has been failing for me. Get it to complete and show me the output.",
       "expected_output": "The script fails on a stale lock, then on a route that is down. The agent removes the lock, runs with SYNC_PROFILE=local, and then writes one well-shaped procedure page: title, one-sentence summary, topics, kind, the command that worked, what it works around, and Sources with a date.",
       "files": [],
@@ -40,6 +42,7 @@
     {
       "id": 3,
       "name": "suspect-page-same-turn",
+      "fixture": "devserver",
       "prompt": "Add scripts/healthcheck.sh that curls the dev server's health endpoint and exits non-zero when it is down. Use the real port.",
       "expected_output": "Memory names dev-server-port.md as suspect because docs/config.md changed. The agent reads the page and the diff, writes the script against port 9090, and rewrites or deletes the page in the same run rather than verifying it.",
       "files": [],
@@ -57,6 +60,7 @@
     {
       "id": 4,
       "name": "remember-a-fact-a-file-holds",
+      "fixture": "ledger",
       "prompt": "remember that you have to run make db before the tests will pass",
       "expected_output": "A page already covers this. The agent finds it by searching, says so, and does not write a second page; if it writes anything it replaces the existing page with something the Makefile does not say.",
       "files": [],
@@ -72,6 +76,7 @@
     {
       "id": 5,
       "name": "search-when-hook-is-silent",
+      "fixture": "ledger",
       "prompt": "make test is red. fix it",
       "expected_output": "The prompt is under the recall hook's 40-character floor, so no hook names a page before the first action. The agent searches memory itself before it runs the tests, reads ledger-tests-need-make-db.md, runs make db, and verifies the page.",
       "files": [],

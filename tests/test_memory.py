@@ -572,7 +572,7 @@ def test_guard_asks_for_approve_too():
     assert run("ls").stdout == ""               # a cwd containing the words does not trigger it
 
 
-def test_guard_denies_cat_of_a_page():
+def test_guard_asks_before_cat_of_a_page():
     import json, subprocess
     shim = ROOT / "scripts" / "guard.sh"
     def run(cmd):
@@ -580,7 +580,7 @@ def test_guard_denies_cat_of_a_page():
     for cmd in ("cat .memory/ollama-host.md", "cat /repo/.memory/a-page.md | head", "head -20 .memory/a-page.md", "sed -n 1,40p .memory/a-page.md",
                 "memory search x 2>&1 || true; echo ---; cat .memory/a-page.md; cat Makefile", "ls && cat .memory/a-page.md", "(cat .memory/a-page.md)", "ls\\ncat .memory/a-page.md"):
         out = json.loads(run(cmd).stdout)
-        assert out["hookSpecificOutput"]["permissionDecision"] == "deny", cmd
+        assert out["hookSpecificOutput"]["permissionDecision"] == "ask", cmd
         assert "memory read" in out["hookSpecificOutput"]["permissionDecisionReason"]
     for cmd in ("cat .memory/index.md", "memory read a-page.md", "cat README.md", "ls .memory", "cat >> .memory/a-page.md <<EOF"):
         assert run(cmd).stdout == "", cmd

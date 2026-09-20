@@ -64,7 +64,7 @@ search yourself, without being asked:
 - before you debug: the error text and the tool's name
 - before you design or recommend: the topic, for `decision` pages
 - before you write a plan: each tool the plan touches, for `procedure` pages
-- when the creator says "remember", "did we", "last time", or "again"
+- when the creator says "did we", "last time", or "again"
 
 Give a query a phrase that says what you mean plus the identifier you
 know: `"why does install fail" pysqlite3`. Several queries in one call

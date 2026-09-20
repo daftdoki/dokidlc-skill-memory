@@ -2,9 +2,10 @@
 # memory guard. POSIX sh so it always parses. Reads PreToolUse JSON on stdin.
 # Asks before `memory doubt --network` (contacts every URL cited in pages) and
 # `memory approve` (accepts a page's check command for this machine).
-# Denies cat, head, sed, less, and more on a page file: `memory read` prints the
-# page with its trust markers and ends with the commands that fix it; cat loses both.
-# Everything else is allowed.
+# Asks before cat, head, sed, tail, less, or more on a page file: `memory read` prints
+# the page with its trust markers and ends with the commands that fix it; cat loses
+# both. An ask, not a deny, so the creator can let a read through when `memory read`
+# itself is broken. Everything else is allowed.
 input=$(cat)
 cmd=$(printf '%s' "$input" | sed -n 's/.*"command":[[:space:]]*"\(.*\)".*/\1/p' | head -c 4000)
 case "$cmd" in
@@ -22,7 +23,7 @@ case "$page" in
   ""|*/index.md) ;;
   *)
     name=${page##*/}
-    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s is a memory page. Read it with: memory read %s. That prints its trust markers and ends with the commands that fix it; cat loses both."}}\n' "$page" "$name"
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"%s is a memory page. Read it with: memory read %s. That prints its trust markers and ends with the commands that fix it; a raw read loses both. Approve only if memory read cannot run."}}\n' "$page" "$name"
     ;;
 esac
 exit 0

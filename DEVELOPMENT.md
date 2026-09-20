@@ -99,9 +99,11 @@ approval, because those are the two places the creator was asked or the
 command came from this machine's own agent. The PreToolUse guard asks for
 `memory approve` and `memory doubt --network`, and the wrapper refuses
 `--network` off a terminal unless `MEMORY_ALLOW_NETWORK=1` is set. The
-same guard denies `cat`, `head`, `sed`, `tail`, `less`, and `more` on a
-page file and names `memory read` instead, because a page read raw
-arrives without its trust markers and the fix commands at its end.
+same guard asks before `cat`, `head`, `sed`, `tail`, `less`, and `more` on
+a page file and names `memory read` instead, because a page read raw
+arrives without its trust markers and the fix commands at its end. It
+asks rather than denies so the creator can let a raw read through when
+`memory read` itself cannot run.
 
 The wrapper never writes through a symlink: `regenerate_index` and `init`
 refuse one, so a cloned repository cannot point `.memory/index.md` or
