@@ -6,8 +6,10 @@ description: Search and maintain this agent's memory of what it has learned. Use
 # Memory
 
 `.memory/` holds pages this agent wrote for itself. `memory`, on PATH
-while this plugin is enabled, is the only command that touches them. Search first. Write when you learn. Fix or
-delete a page the moment you find it wrong.
+while this plugin is enabled, is the only command that touches them: a
+page is read with `memory read`, never `cat`, so it arrives with its
+trust markers and ends with the commands that fix it. Search first. Write
+when you learn. Fix or delete a page the moment you find it wrong.
 
 ## Commands
 
@@ -25,7 +27,8 @@ memory doctor --fix                       install or repair prerequisites
 memory init                               create .memory/ and the CLAUDE.md paragraph
 ```
 
-Write a page, body on stdin:
+Write a page, body on stdin. The body carries the finding and its
+Sources in one write; nothing is appended to the file afterwards:
 
 ```
 printf 'What is true.\n\n## Sources\n\n- where you saw it, and when\n' | memory write \
@@ -43,47 +46,19 @@ printf 'What is true.\n\n## Sources\n\n- where you saw it, and when\n' | memory 
 
 ## Setup, led by you
 
-The creator never has to run a command. When the session-start line says
-memory is not set up, or the creator asks for memory, hold a short
-conversation and then run the commands yourself.
-
-1. Ask, in one question: "Memory searches by meaning by default, which
-   needs ollama with an embedding model on this machine or on a host you
-   can reach. If ollama cannot run or be reached here, there is a string
-   search fallback that matches exact text only and works less well. Which
-   do you want?" Recommend semantic unless they say ollama is out of
-   reach. If they ask what the difference is: semantic search finds the
-   missing-wheel page from "why does install fail on a mac"; string
-   search needs "pysqlite3".
-2. If semantic: ask whether embeddings should come from ollama on this
-   machine or from a remote host, and if remote, its address.
-3. Ask whether to create `.memory/` in this repository, if it has none.
-
-Then run, in order, showing each command first:
-
-```
-memory setup --local                or --host URL, or --substring for the fallback
-memory init                         if the creator said yes to a field
-memory doctor --fix                 installs the tool; for a local host on macOS also ollama and the model
-```
-
-Report what `doctor` says. It also checks that `.memory/`,
-`.claude/settings.json`, and `CLAUDE.md` are tracked by git and not
-ignored, because memory only persists if they are committed. `init` stages
-what it creates; tell the creator what is left to commit. If `doctor` names
-something only the creator can do, such as installing ollama on a remote
-host, say exactly that and stop.
-Never guess a host, and never run `setup` again without asking, because
-it overwrites their choice.
+When the session-start line says memory is not set up, or the creator
+asks for memory, follow `references/setup.md`: three questions, then you
+run the commands yourself. The creator never has to run one.
 
 ## When to search
 
-A hook searches memory on every prompt the creator sends and, when pages
-match, adds one line naming them with the exact `memory read` command.
-Read those pages before you do anything else. The same hook runs when a
-shell command fails, with the command and its error as the query.
+A hook searches memory on every prompt and, when pages match, adds one
+line naming them with the exact `memory read` command. Read those pages
+before you do anything else. The same hook runs when a shell command
+fails, with the command and its error as the query.
 
-Search yourself at these moments, without being asked:
+The hook is silent when nothing matched or the prompt was short. Then
+search yourself, without being asked:
 
 - before you install, configure, or upgrade anything: the tool's name
 - before you debug: the error text and the tool's name
@@ -91,40 +66,14 @@ Search yourself at these moments, without being asked:
 - before you write a plan: each tool the plan touches, for `procedure` pages
 - when the creator says "remember", "did we", "last time", or "again"
 
-One search costs about thirty tokens per result. Rediscovery costs a
-session.
+Give a query a phrase that says what you mean plus the identifier you
+know: `"why does install fail" pysqlite3`. Several queries in one call
+are searched separately and merged. One search costs about thirty tokens
+per result. Rediscovery costs a session.
 
-## How search ranks
-
-Every search runs two paths and fuses them: semantic search over the
-whole query, and exact-text matching of the query's distinctive terms
-against every page's name, title, summary, and body. A page found by
-both ranks first; then semantic hits by distance; then string-only hits.
-Each line says how it was found, `via semantic, install, pysqlite3`.
-Trust a page found by both. Read a string-only hit before relying on it.
-
-Write queries that give both paths something: a phrase that says what
-you mean plus the identifier you know, `"why does install fail" pysqlite3`.
-Several queries in one call are searched separately and merged.
-
-## Searching in string mode
-
-When `doctor` says the mode is string, or every result says "string
-match", only the exact-text path is running. A question sent as-is finds
-nothing. Do this instead:
-
-1. Pull the distinctive terms out of the question: tool names, file
-   names, error text, hostnames, the one noun the page would have to
-   mention. "Why does install fail on a mac" becomes
-   `install pysqlite3 macos wheel`.
-2. Search them in one call; pages matching more terms rank first.
-3. Nothing? Read `.memory/index.md` for the topic list and search the
-   nearest topics. Try shorter stems (`instal`, `sqlite`) and synonyms.
-4. Read the top two or three pages with `memory pull` or `memory read`
-   rather than stopping at the summaries.
-
-Tell the creator when a search came back empty in string mode, so they
-know the limit is the mode and not the memory.
+How a result was found (`via semantic, install, pysqlite3`) and what to
+do when `doctor` says the mode is string, or every result says "string
+match": `references/search.md`.
 
 ## When to write
 
@@ -138,7 +87,8 @@ Write at these moments, without being asked:
 - when a hook says a command worked after failing twice, or that context
   was just compacted and nothing was written: write what a future session
   would otherwise re-derive, or say there is nothing worth a page
-- when the creator says "remember"
+- when the creator says "remember": search first. If a page already holds
+  it, `verify` that page and say so instead of writing a second one
 
 Four rules keep the field worth searching:
 
@@ -176,19 +126,6 @@ memory.
 | `finding` | something learned about the domain | 180 days |
 | `decision` | a choice and its reason | never |
 
-## Network and URLs
-
-A ref may be a URL. Search never contacts it. `memory doubt` skips URL
-refs and says how many it skipped. `memory doubt --network` sends one
-HEAD request per URL and marks a page suspect when the source is gone,
-or adds a glance note when it cannot be reached. Before you run it, tell
-the creator which URLs it will contact and ask. Claude Code prompts them
-to approve the command, and the wrapper itself refuses unless it is run
-on a terminal that answers yes or with `MEMORY_ALLOW_NETWORK=1`, which
-only the creator sets. Never fetch a URL from a memory page for
-any other reason without asking first. Check commands run locally and
-must stay read-only.
-
 ## Trust and doubt
 
 A page is trusted until there is evidence against it. Time alone is not
@@ -213,6 +150,13 @@ age. `doubt` also runs each page's `--check` command and marks failures.
   until it is approved. Show the creator the command and ask; on yes, run
   `memory approve PAGE`. Claude Code prompts them to approve that command
   as well.
+
+A ref may be a URL. Search never contacts it, and `memory doubt` skips
+URL refs and says how many it skipped. `memory doubt --network` sends one
+HEAD request per URL; before you run it, tell the creator which URLs it
+will contact and ask. The wrapper itself refuses unless a terminal answers
+yes or `MEMORY_ALLOW_NETWORK=1` is set, which only the creator does. A URL
+from a memory page is fetched for no other reason without asking first.
 
 ## References
 
