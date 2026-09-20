@@ -122,7 +122,8 @@ def test_validate_page_rules():
     assert any("summary" in e for e in errs)
     assert any("topics" in e for e in errs)
     assert any("kind" in e for e in errs)
-    assert any(e.startswith("warning:") and "Sources" in e for e in errs)
+    assert any("Sources" in e and not e.startswith("warning:") for e in errs)   # an error, not a warning
+    assert memory.validate_page("ok-page.md", good, "b\n\n## sources\n\n- x\n") == []
     assert any("index.md" in e for e in memory.validate_page("index.md", good, "## Sources\n"))
 
 
@@ -569,6 +570,20 @@ def test_guard_asks_for_approve_too():
         return subprocess.run(["sh", str(shim)], input=json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": "/tmp/memory-doubt-notes"}), capture_output=True, text=True)
     assert "ask" in run("memory approve x.md").stdout
     assert run("ls").stdout == ""               # a cwd containing the words does not trigger it
+
+
+def test_guard_denies_cat_of_a_page():
+    import json, subprocess
+    shim = ROOT / "scripts" / "guard.sh"
+    def run(cmd):
+        return subprocess.run(["sh", str(shim)], input=json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}}), capture_output=True, text=True)
+    for cmd in ("cat .memory/ollama-host.md", "cat /repo/.memory/a-page.md | head", "head -20 .memory/a-page.md", "sed -n 1,40p .memory/a-page.md",
+                "memory search x 2>&1 || true; echo ---; cat .memory/a-page.md; cat Makefile", "ls && cat .memory/a-page.md", "(cat .memory/a-page.md)", "ls\\ncat .memory/a-page.md"):
+        out = json.loads(run(cmd).stdout)
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny", cmd
+        assert "memory read" in out["hookSpecificOutput"]["permissionDecisionReason"]
+    for cmd in ("cat .memory/index.md", "memory read a-page.md", "cat README.md", "ls .memory", "cat >> .memory/a-page.md <<EOF"):
+        assert run(cmd).stdout == "", cmd
 
 
 def test_guard_asks_only_for_network_doubt():

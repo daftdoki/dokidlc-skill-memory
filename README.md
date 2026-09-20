@@ -134,7 +134,8 @@ goes silent, because the client has no timeout.
 | `verified` | When the agent last confirmed the page is still true. |
 
 Every page ends with a Sources section. It says where the fact came from,
-so a later session can check it.
+so a later session can check it. `memory write` refuses a body without
+one.
 
 A check written on this machine is approved here when it is written. A
 check that arrived with a clone runs only after the agent asks you and

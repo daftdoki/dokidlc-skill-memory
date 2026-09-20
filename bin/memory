@@ -892,8 +892,9 @@ def validate_page(name: str, fm: dict, body: str) -> list[str]:
         problems.append("topics is required; one or two short tags")
     if fm.get("kind") not in KINDS:
         problems.append(f"kind must be one of {', '.join(KINDS)}")
-    if "## Sources" not in body and "## sources" not in body.lower():
-        problems.append("warning: no '## Sources' section; a page without sources cannot be re-verified")
+    if "## sources" not in body.lower():
+        problems.append("the body has no '## Sources' section. Put it in the same write: "
+                        "printf 'What is true.\\n\\n## Sources\\n\\n- what you ran or read, and when\\n' | memory write ...")
     size = len(render_page(fm, body).encode())
     if size > PAGE_LIMIT:
         problems.append(f"warning: page is {size} bytes, over the {PAGE_LIMIT} byte soft limit; split it")
@@ -1649,7 +1650,13 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("pages", nargs="+")
     p.set_defaults(func=cmd_read)
 
-    p = sub.add_parser("write", help="write a page; body on stdin")
+    p = sub.add_parser(
+        "write", help="write a page; body on stdin", formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="The body is the finding and its Sources, in one write:\n\n"
+               "  printf 'What is true.\\n\\n## Sources\\n\\n- what you ran or read, and when\\n' | memory write NAME.md \\\n"
+               "    --title \"Plain statement\" --summary \"One sentence\" --topics a,b --kind procedure\n\n"
+               "A body with no '## Sources' section is refused. The same command replaces an existing page.",
+    )
     p.add_argument("page", help="filename, lowercase-hyphenated, ending .md")
     p.add_argument("--title", required=True)
     p.add_argument("--summary", required=True, help="one sentence; this is what search prints")
