@@ -1,8 +1,8 @@
 # Recommendations for `dokidlc-skill-memory`: a review pass, not a dream cycle
 
 Written 2026-09-19 for the creator to work from separately. It applies the
-findings of the [agent memory systems report](https://github.com/daftdoki/research/tree/claude/exciting-albattani-1y7gxt/agent-memory-systems-and-dreaming) in the research
-repository (on its branch until that report merges to `main`) to this plugin
+findings of the [agent memory systems report](https://github.com/daftdoki/research/tree/main/agent-memory-systems-and-dreaming) in the research
+repository to this plugin
 at `e56235f`, using the two fields that have run it for about two weeks: `daftdoki/agent-neckbeard` (60 pages, 170 commits
 read) and `daftdoki/agent-builder` (45 pages, 315 commits read), plus the
 completed quest `2609020128-mf-evaluate-memoryfields-as-the-memory-syst` in
@@ -47,7 +47,7 @@ In priority order:
 
 ## 1. What the research says that applies here
 
-The full argument is in the [report](https://github.com/daftdoki/research/tree/claude/exciting-albattani-1y7gxt/agent-memory-systems-and-dreaming), with its sources tagged by
+The full argument is in the [report](https://github.com/daftdoki/research/tree/main/agent-memory-systems-and-dreaming), with its sources tagged by
 whether the primary document was read. The parts that bear on this plugin:
 
 | Finding | Source | Consequence for the plugin |
