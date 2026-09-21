@@ -5,11 +5,11 @@ description: "The repository's own memory: pages in .memory/ that past sessions 
 
 # Memory
 
-`.memory/` holds pages this agent wrote for itself. `memory`, on PATH
-while this plugin is enabled, is the only command that touches them: a
-page is read with `memory read`, never `cat`, so it arrives with its
-trust markers and ends with the commands that fix it. Search first. Write
-when you learn. Fix or delete a page the moment you find it wrong.
+This agent's memory is a set of pages that only the `memory` command,
+on PATH while this plugin is enabled, reads and writes. A page is read
+with `memory read`, never `cat`, so it arrives with its trust markers and
+ends with the commands that fix it. Search first. Write when you learn.
+Fix or delete a page the moment you find it wrong.
 
 ## Commands
 

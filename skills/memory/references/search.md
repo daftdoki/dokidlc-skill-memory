@@ -20,7 +20,7 @@ nothing. Do this instead:
    mention. "Why does install fail on a mac" becomes
    `install pysqlite3 macos wheel`.
 2. Search them in one call; pages matching more terms rank first.
-3. Nothing? Read `.memory/index.md` for the topic list and search the
+3. Nothing? `memory read index.md` gives the topic list; search the
    nearest topics. Try shorter stems (`instal`, `sqlite`) and synonyms.
 4. Read the top two or three pages with `memory pull` or `memory read`
    rather than stopping at the summaries.
