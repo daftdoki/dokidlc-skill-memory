@@ -65,6 +65,15 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/guard.sh"
           }
         ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/guard.sh"
+          }
+        ]
       }
     ],
     "PostToolUse": [

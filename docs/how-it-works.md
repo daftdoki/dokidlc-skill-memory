@@ -17,7 +17,7 @@ page's check command.
 | A shell command works after failing twice | A reminder to write the fix as a procedure page, once per command. |
 | The agent is about to stop | Once per session, only when a command failed twice then worked and nothing was written: write it, or say there is nothing worth a page. |
 | The agent runs `memory doubt --network` or `memory approve` | Claude Code asks you to approve it. |
-| The agent runs `cat`, `head`, `sed`, `tail`, `less`, or `more` on a page file | Claude Code asks you to approve it, and the reason names `memory read`, which prints the page with its trust markers and the commands that fix it. |
+| The agent opens a page file raw, with `cat`, `head`, `sed`, `tail`, `less`, or `more`, or with the Read tool | The call is refused and the agent is told to use `memory read`, which prints the page with its trust markers and the commands that fix it, and to run `memory doctor --fix` if that command itself fails. |
 
 ## Memory pages
 

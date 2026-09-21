@@ -7,7 +7,7 @@
 bin/memory                   the command; Python under uv run --script, PyYAML inline
 memory.pin                   memoryfield-tool commit and the embedding model
 skills/memory/SKILL.md       the agent's rules
-hooks/hooks.json             SessionStart and SubagentStart: doctor --brief; UserPromptSubmit and PostToolUse(Failure): recall; Stop: nudge; PreToolUse: guard
+hooks/hooks.json             SessionStart and SubagentStart: doctor --brief; UserPromptSubmit and PostToolUse(Failure): recall; Stop: nudge; PreToolUse (Bash, Read): guard
 tests/                       pytest; nothing needs ollama or memoryfield-tool
 ```
 
@@ -99,11 +99,15 @@ approval, because those are the two places the creator was asked or the
 command came from this machine's own agent. The PreToolUse guard asks for
 `memory approve` and `memory doubt --network`, and the wrapper refuses
 `--network` off a terminal unless `MEMORY_ALLOW_NETWORK=1` is set. The
-same guard asks before `cat`, `head`, `sed`, `tail`, `less`, and `more` on
-a page file and names `memory read` instead, because a page read raw
-arrives without its trust markers and the fix commands at its end. It
-asks rather than denies so the creator can let a raw read through when
-`memory read` itself cannot run.
+same guard, registered for Bash and for Read, denies a raw read of a
+page file, by `cat`, `head`, `sed`, `tail`, `less`, or `more` in a command
+or by the Read tool, and names `memory read` in the reason, because a page
+read raw arrives without its trust markers and the fix commands at its
+end. It denies rather than asks because the reason reaches the agent only
+on a deny; an ask the creator refuses shows the agent nothing, and a
+reviewer subagent on 2026-09-21 retried the cat and then used Read. The
+reason ends with the way out when `memory read` itself is broken:
+`memory doctor --fix`.
 
 The wrapper never writes through a symlink: `regenerate_index` and `init`
 refuse one, so a cloned repository cannot point `.memory/index.md` or
