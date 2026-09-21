@@ -1,6 +1,6 @@
 ---
 name: memory
-description: Search and maintain this agent's memory of what it has learned. Use before investigating anything that a past session may have met, and after learning something a future session should not have to rediscover.
+description: "The repository's own memory: pages in .memory/ that past sessions wrote, searched and maintained with the memory command. Use it before you install, configure, debug, or design anything here, when the creator says remember, did we, or last time, after a fix took more than one attempt, when a page is marked suspect or found wrong, and to set memory up. Not Claude Code's memory under ~/.claude."
 ---
 
 # Memory

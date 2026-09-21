@@ -1,0 +1,22 @@
+[
+  {"query": "the tests in ~/Code/ledger fail with 'no such table: entries' on my laptop but pass in CI. I feel like we hit this exact thing a few weeks ago?", "should_trigger": true},
+  {"query": "did we ever figure out why uv tool install memoryfield-tool needs that overrides file on the mac? I need the same thing on the neckbeard box now", "should_trigger": true},
+  {"query": "remember that the NAS keeps its live firmware version in /etc/default_config, not /etc/config. the vendor docs are wrong about this", "should_trigger": true},
+  {"query": "about to add an ollama service to docker-compose.yml for this project. anything from earlier sessions I should know before I start?", "should_trigger": true},
+  {"query": "ok that took four tries but SYNC_PROFILE=local finally made scripts/sync.py run through. write that down somewhere so next time isn't a slog", "should_trigger": true},
+  {"query": "set up memory in this repo. ollama is already running on this mac with nomic-embed-text pulled", "should_trigger": true},
+  {"query": "the page about the dev server port says 8080 but server/settings.py says 9090 now. sort that out before you write the healthcheck script", "should_trigger": true},
+  {"query": "before you plan the pytest migration, check what we decided about test runners in this project last month. I think there was a reason we stayed on unittest", "should_trigger": true},
+  {"query": "session start said 3 pages are suspect. deal with them first, then we'll get on with the guard change", "should_trigger": true},
+  {"query": "what has this agent already learned about the questlog guard and heredocs? give me a summary before we touch scripts/guard.sh", "should_trigger": true},
+  {"query": "claude code's memory file under ~/.claude/projects/-Users-aaron-Code-ch-display/memory/ has a stale path for the display repo, fix it", "should_trigger": false},
+  {"query": "the node process is at 3.2GB RSS after an hour of traffic. find the memory leak, I think it's in the websocket handler in src/ws.ts", "should_trigger": false},
+  {"query": "add an lru_cache to fetch_rates() in src/ledger/rates.py so we stop hitting the API on every call. memoize by currency pair", "should_trigger": false},
+  {"query": "write a docs/caching.md explaining our in-memory cache strategy for new contributors, the eviction rules are in cache.py", "should_trigger": false},
+  {"query": "what's the difference between memoryfields and mem0? I'm writing a blog post comparing agent memory systems and want a fair take", "should_trigger": false},
+  {"query": "the postgres container keeps getting OOM killed on the staging box. bump shm_size and the memory limit in docker-compose.yml", "should_trigger": false},
+  {"query": "I want claude to remember my commit message style across every project on this machine, not just this one. where does that go?", "should_trigger": false},
+  {"query": "the session store forgets logins after every restart. sessions need to persist, move them from the in-memory dict to redis", "should_trigger": false},
+  {"query": "convert the memoryfield spec markdown to a PDF I can read offline on the flight, it's at ~/Code/memoryfield-spec/SPEC.md", "should_trigger": false},
+  {"query": "free -m on the build box shows 92% used with nothing running. what's eating it, and is it the tmpfs?", "should_trigger": false}
+]
