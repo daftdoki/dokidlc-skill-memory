@@ -7,7 +7,7 @@
 bin/memory                   the command; Python under uv run --script, PyYAML inline
 memory.pin                   memoryfield-tool commit and the embedding model
 skills/memory/SKILL.md       the agent's rules
-hooks/hooks.json             SessionStart and SubagentStart: doctor --brief; UserPromptSubmit and PostToolUse(Failure): recall; Stop: nudge; PreToolUse (Bash, Read): guard
+hooks/hooks.json             SessionStart and SubagentStart: doctor --brief --hook; UserPromptSubmit and PostToolUse(Failure): recall; Stop: nudge; PreToolUse (Bash, Read): guard
 tests/                       pytest; nothing needs ollama or memoryfield-tool
 ```
 
@@ -85,8 +85,10 @@ Only SessionStart and UserPromptSubmit inject plain stdout. SubagentStart,
 PostToolUse, PostToolUseFailure, and Stop need
 `hookSpecificOutput.additionalContext`; PreCompact has no context channel
 at all, so the compaction reminder rides on SessionStart with
-`source: compact`. `doctor --brief` reads `hook_event_name` from stdin to
-pick the framing. Host probes are cached in the state dir for ten
+`source: compact`. `doctor --brief --hook` reads `hook_event_name` from
+stdin to pick the framing; without `--hook` the command never touches
+stdin, because a script that inherits an open pipe would otherwise wait
+for an EOF that never comes. Host probes are cached in the state dir for ten
 minutes so a dead host costs one probe, not one per prompt.
 
 ## Approved checks

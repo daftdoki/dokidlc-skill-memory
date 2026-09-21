@@ -1463,7 +1463,9 @@ def install_tool(pin: dict[str, str]) -> bool:
 
 def cmd_doctor(args: argparse.Namespace) -> None:
     if args.brief:
-        event = read_event()
+        # stdin holds a hook payload only when hooks.json passed --hook; a person or a script
+        # running the same command may have stdin on a pipe that never closes, and json.load waits for EOF
+        event = read_event() if args.hook else {}
         hook = str(event.get("hook_event_name") or "")
         source = str(event.get("source") or "")
 
@@ -1693,6 +1695,7 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("doctor", help="check prerequisites; --fix installs them")
     p.add_argument("--fix", action="store_true")
     p.add_argument("--brief", action="store_true", help="one line, no host probe; nothing if no field")
+    p.add_argument("--hook", action="store_true", help="with --brief: read the hook payload on stdin and frame the line for its event")
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("setup", help="substring or semantic search, and the embedding host; prompts if no flags")

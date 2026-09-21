@@ -720,14 +720,14 @@ def test_brief_channels(tmp_path, monkeypatch, capsys):
     memory.write_config_file({"semantic": False}); memory.set_root(tmp_path)
     monkeypatch.setattr("sys.stdin", io.StringIO("{}")); memory.main(["init"]); capsys.readouterr()
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "SubagentStart", "session_id": "s3"})))
-    memory.main(["doctor", "--brief"])
+    memory.main(["doctor", "--brief", "--hook"])
     out = json.loads(capsys.readouterr().out)
     assert out["hookSpecificOutput"]["hookEventName"] == "SubagentStart" and "memory: 0 pages" in out["hookSpecificOutput"]["additionalContext"]
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "SessionStart", "source": "compact", "session_id": "s3"})))
-    memory.main(["doctor", "--brief"])
+    memory.main(["doctor", "--brief", "--hook"])
     assert "just compacted" in capsys.readouterr().out
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "SessionStart", "source": "startup", "session_id": "s3"})))
-    memory.main(["doctor", "--brief"])
+    memory.main(["doctor", "--brief", "--hook"])
     assert "just compacted" not in capsys.readouterr().out
 
 
@@ -753,3 +753,17 @@ def test_approved_checks_gate_doubt(tmp_path, monkeypatch):
 
 def test_terms_keep_dotted_numbers_whole():
     assert memory.query_terms("the NAS at 192.168.1.10 runs 5.2.9 and ollama-host-3") == ["nas", "192.168.1.10", "runs", "5.2.9", "ollama-host-3", "ollama", "host"]
+
+
+def test_doctor_brief_returns_with_stdin_held_open(tmp_path):
+    """A script that inherits an open pipe must not hang: without --hook the command never reads stdin."""
+    import os, select, subprocess
+    env = dict(os.environ, XDG_CONFIG_HOME=str(tmp_path / "cfg"), XDG_STATE_HOME=str(tmp_path / "st"), CLAUDE_PROJECT_DIR=str(tmp_path))
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    proc = subprocess.Popen([str(ROOT / "bin" / "memory"), "doctor", "--brief"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, text=True)
+    try:
+        ready, _, _ = select.select([proc.stdout], [], [], 60)   # stdin stays open the whole time
+        assert ready, "doctor --brief did not print within 60 seconds with stdin held open"
+        assert "memory: not set up" in proc.stdout.readline()
+    finally:
+        proc.kill()
