@@ -14,15 +14,11 @@ do with a page found wrong.
 
 With it enabled, the agent works memory on its own. Every prompt you send
 is searched, and when pages match, one line names them with the command to
-read each. A shell command that fails is searched with its error text. The
-agent searches before it installs, configures, debugs, or designs, and
-writes a page when something took more than one attempt. A page cites
-files at a commit; when a cited file changes, search marks the page
-suspect and the agent reads the diff, then verifies, rewrites, or deletes
-the page in the same turn. A page can carry a read-only check command, and
-`memory doubt` runs the checks and lists every page with evidence against
-it. `memory cost` prices the index and one search in tokens; `memory
-stats` counts how often a search led to a read.
+read each; a shell command that fails is searched with its error text. The
+agent writes a page when something took more than one attempt. A page
+cites files at a commit, so when a cited file changes, search marks the
+page suspect and the agent reads the diff, then verifies, rewrites, or
+deletes it in the same turn.
 
 Nothing in memory needs your approval, and nothing you asked for goes
 there. Memory is what the agent learned by itself; documents you review
@@ -152,14 +148,14 @@ File a bug or ask a question in
 
 ## Built on memoryfields
 
-The idea, the page format, and the search engine are Cal Paterson's:
-the [article](https://calpaterson.com/memoryfields.html), the
-[format specification](https://github.com/calpaterson/memoryfield-spec)
-(MIT), [memoryfield-tool](https://github.com/calpaterson/memoryfield-tool)
-(AGPL-3.0-or-later), and
-[his skill for agents](https://github.com/calpaterson/memoryfield-skill)
-(MIT). The tool is installed as published at the commit in `memory.pin`;
-nothing from it is copied here, and it reads the fields this plugin writes.
+The idea, the page format, and the search engine are Cal Paterson's: the
+[article](https://calpaterson.com/memoryfields.html), the [format
+specification](https://github.com/calpaterson/memoryfield-spec) (MIT),
+[memoryfield-tool](https://github.com/calpaterson/memoryfield-tool)
+(AGPL-3.0-or-later), and [his skill for
+agents](https://github.com/calpaterson/memoryfield-skill) (MIT). The tool
+is installed as published at the commit in `memory.pin`; nothing from it is
+copied here.
 
 ## License
 
